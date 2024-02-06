@@ -30,7 +30,8 @@ class InsClass(_IntEnum):
         return self in (self.JMP, self.JMP32)
 
 
-class Register(_IntEnum):
+@enum.verify(enum.UNIQUE, enum.CONTINUOUS)
+class Reg(_IntEnum):
     R0 = 0
     R1 = 1
     R2 = 2
@@ -119,24 +120,24 @@ class LoadStoreOpcode(NamedTuple):
 
 class Alu(NamedTuple):
     opcode: AluOpcode
-    src_reg: Register
-    dst_reg: Register
+    src_reg: Reg
+    dst_reg: Reg
     offset: int
     imm: int
 
 
 class Jump(NamedTuple):
     opcode: JumpOpcode
-    src_reg: Register
-    dst_reg: Register
+    src_reg: Reg
+    dst_reg: Reg
     offset: int
     imm: int
 
 
 class LoadStore(NamedTuple):
     opcode: LoadStoreOpcode
-    src_reg: Register
-    dst_reg: Register
+    src_reg: Reg
+    dst_reg: Reg
     offset: int
     imm: int
 
@@ -154,7 +155,7 @@ class LoadSource(_IntEnum):
 class LoadImm64(NamedTuple):
     opcode: LoadStoreOpcode
     src: LoadSource
-    dst_reg: Register
+    dst_reg: Reg
     offset: int
     imm32: int
     next_imm: int
