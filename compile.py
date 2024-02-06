@@ -23,25 +23,24 @@ class Compiler(object):
     def __init__(self, program: list[bpf.Instruction]):
         self.program = program
 
-    def _append_block(self) -> ir.IRBuilder:
-        return ir.IRBuilder(self.main_func.append_basic_block())
+    def _append_basic_block(self) -> ir.IRBuilder:
+        self.builder = ir.IRBuilder(self.main_func.append_basic_block())
 
     def compile(self) -> ir.Module:
         self.module = ir.Module()
         self.main_func = ir.Function(
             self.module, ir.FunctionType(I64, (I64,)), "bpf_main"
         )
-
-        builder = self._append_block()
+        self._append_basic_block()
 
         # Prelude
-        (stack_begin, stack_end) = self._alloc_stack(builder, 512)
-        self.registers = self._alloc_reg(builder)
+        (stack_begin, stack_end) = self._alloc_stack(self.builder, 512)
+        self.registers = self._alloc_reg(self.builder)
 
-        self._store_reg(builder, bpf.Reg.R1, self.main_func.args[0])
-        self._store_reg(builder, bpf.Reg.R10, builder.ptrtoint(stack_end, I64))
+        self.store_reg(bpf.Reg.R1, self.main_func.args[0])
+        self.store_reg(bpf.Reg.R10, self.builder.ptrtoint(stack_end, I64))
 
-        self._compile(builder, iter(self.program))
+        self._compile(iter(self.program))
 
         return self.module
 
@@ -61,26 +60,20 @@ class Compiler(object):
             register: builder.alloca(I64, name=register.name) for register in bpf.Reg
         }
 
-    def _load_reg(
-        self, builder: ir.IRBuilder, reg: bpf.Reg, alu64: bool = True
-    ) -> ir.Value:
-        value = builder.load(self.registers[reg])
+    def load_reg(self, reg: bpf.Reg, alu64: bool = True) -> ir.Value:
+        value = self.builder.load(self.registers[reg])
         if not alu64:
-            value = builder.trunc(value, I32)
+            value = self.builder.trunc(value, I32)
         return value
 
-    def _store_reg(
-        self, builder: ir.IRBuilder, reg: bpf.Reg, value: ir.Value, alu64: bool = True
-    ) -> None:
+    def store_reg(self, reg: bpf.Reg, value: ir.Value, alu64: bool = True) -> None:
         if not alu64:
-            value = builder.zext(value, I64)
-        builder.store(value, self.registers[reg])
+            value = self.builder.zext(value, I64)
+        self.builder.store(value, self.registers[reg])
 
-    def _compile(
-        self, builder: ir.IRBuilder, program: Iterator[bpf.Instruction]
-    ) -> None:
+    def _compile(self, program: Iterator[bpf.Instruction]) -> None:
         for ins in program:
-            builder.comment(f"{ins!r}")
+            self.builder.comment(f"{ins!r}")
             match ins:
                 case bpf.Alu(opcode, src_reg, dst_reg, offset, imm):
                     alu64 = opcode.ins_class == bpf.InsClass.ALU64
@@ -94,32 +87,32 @@ class Compiler(object):
                             else:
                                 src = I32(imm)
                         case bpf.Source.X:
-                            src = self._load_reg(builder, src_reg, alu64)
+                            src = self.load_reg(src_reg, alu64)
 
-                    dst = self._load_reg(builder, dst_reg, alu64)
+                    dst = self.load_reg(dst_reg, alu64)
 
                     match opcode.code:
                         case bpf.AluCode.ADD:
-                            dst = builder.add(dst, src)
+                            dst = self.builder.add(dst, src)
                         case bpf.AluCode.MUL:
-                            dst = builder.mul(dst, src)
+                            dst = self.builder.mul(dst, src)
                         case bpf.AluCode.MOV:
                             dst = src
                         case bpf.AluCode.LSH:
                             # dst <<= (src & mask)
-                            dst = builder.shl(dst, builder.and_(src, mask))
+                            dst = self.builder.shl(dst, self.builder.and_(src, mask))
                         case bpf.AluCode.ARSH:
                             # dst s>>= (src & mask)
-                            dst = builder.ashr(dst, builder.and_(src, mask))
+                            dst = self.builder.ashr(dst, self.builder.and_(src, mask))
                         case _:
                             raise NotImplementedError(f"{opcode!r}")
 
-                    self._store_reg(builder, dst_reg, dst, alu64)
+                    self.store_reg(dst_reg, dst, alu64)
 
                 case bpf.Jump(opcode):
                     match opcode.code:
                         case bpf.JumpCode.EXIT:
-                            builder.ret(self._load_reg(builder, bpf.Reg.R0))
+                            self.builder.ret(self.load_reg(bpf.Reg.R0))
                         case _:
                             raise NotImplementedError(f"{opcode!r}")
 
@@ -130,47 +123,43 @@ class Compiler(object):
                         case _:
                             raise NotImplementedError(f"{src!r}")
 
-                    self._store_reg(builder, dst_reg, result)
+                    self.store_reg(dst_reg, result)
 
                 case bpf.LoadStore(opcode, src_reg, dst_reg, offset, imm):
                     size_type = BPF_SIZE_TO_TYPE[opcode.size]
 
                     if opcode.ins_class == bpf.InsClass.LDX:
                         # result = *(unsigned size *) (src + offset)
-                        result = builder.load(
-                            builder.inttoptr(
-                                builder.add(
-                                    self._load_reg(builder, src_reg), I64(offset)
-                                ),
+                        result = self.builder.load(
+                            self.builder.inttoptr(
+                                self.builder.add(self.load_reg(src_reg), I64(offset)),
                                 size_type.as_pointer(),
                             )
                         )
 
                         match opcode.mode:
                             case bpf.Mode.MEM:
-                                result = builder.zext(result, I64)
+                                result = self.builder.zext(result, I64)
                             case bpf.Mode.MEMSX:
-                                result = builder.sext(result, I64)
+                                result = self.builder.sext(result, I64)
                             case _ as mode:
                                 raise ValueError(f"{mode.name} is unsupported")
 
-                        self._store_reg(builder, dst_reg, result)
+                        self.store_reg(dst_reg, result)
                     else:
                         if opcode.ins_class == bpf.InsClass.ST:
-                            src = builder.trunc(
-                                self._load_reg(builder, src_reg), size_type
-                            )
+                            src = self.builder.trunc(self.load_reg(src_reg), size_type)
                         elif opcode.ins_class == bpf.InsClass.STX:
                             src = size_type(imm)
                         else:
                             raise AssertionError(f"{ins!r}")
 
                         # dst_ptr = (size *) (dst + offset)
-                        dst_ptr = builder.inttoptr(
-                            builder.add(self._load_reg(builder, dst_reg), I64(offset)),
+                        dst_ptr = self.builder.inttoptr(
+                            self.builder.add(self.load_reg(dst_reg), I64(offset)),
                             size_type.as_pointer(),
                         )
-                        builder.store(src, dst_ptr)
+                        self.builder.store(src, dst_ptr)
 
                 case _:
                     raise NotImplementedError(f"{ins!r}")
@@ -188,7 +177,11 @@ def compile_program(instructions: list[bpf.Instruction]) -> ir.Module:
 
 
 if __name__ == "__main__":
-    stream = ConstBitStream(filename="samples/hello.bin")
+    import sys
+
+    (filename,) = sys.argv[1:]
+
+    stream = ConstBitStream(filename=filename)
     program = disasm.disasm(stream)
     compiler = Compiler(program)
     print(compiler.compile())
