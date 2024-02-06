@@ -1,2 +1,7 @@
 __pycache__/
 .mypy_cache/
+*.bc
+*.bin
+*.ll
+*.o
+a.out

@@ -69,6 +69,10 @@ def iter_disasm(stream: ConstBitStream) -> Iterator[bpf.Instruction]:
         yield disasm_one(stream)
 
 
+def disasm(stream: ConstBitStream) -> list[bpf.Instruction]:
+    return list(iter_disasm(stream))
+
+
 if __name__ == "__main__":
     stream = ConstBitStream(filename="samples/hello.bin")
     pprint.pprint(list(iter_disasm(stream)))
