@@ -1,4 +1,4 @@
-unsigned long func(void) {
+unsigned long bpf_main(void) {
   const char *s = "Hello";
   asm volatile("" : "+r,m"(s)::"memory");
 

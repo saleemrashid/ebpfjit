@@ -3,7 +3,7 @@ static void inline hash_appendc(unsigned long *hash, char c) {
   *hash = ((*hash << 5) + *hash) + c;
 }
 
-unsigned long func(void) {
+unsigned long bpf_main(void) {
   unsigned long hash = 5381;
   hash_appendc(&hash, 'H');
   hash_appendc(&hash, 'e');
