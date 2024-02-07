@@ -1,7 +1,9 @@
 CLANG   := clang
 LLC     := llc
 OBJCOPY	:= llvm-objcopy
-BPFJIT  := ../compile.py
+
+BPFJIT      := ../compile.py
+BPFJIT_DEPS := ../bpf.py ../disasm.py
 
 CFLAGS  := -O2 -Wall
 LDFLAGS :=
@@ -35,7 +37,7 @@ test-%: %-native.txt %-jit.txt
 %-jit.o: %-jit.ll
 	$(CLANG) $(CFLAGS) -Wno-override-module $< -c -o $@
 
-%-jit.ll: %-bpf.bin $(BPFJIT)
+%-jit.ll: %-bpf.bin $(BPFJIT) $(BPFJIT_DEPS)
 	$(BPFJIT) $< > $@
 
 %-bpf.ll: %.c
