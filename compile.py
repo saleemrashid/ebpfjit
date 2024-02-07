@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from typing import Iterable
+from typing import Iterable, Iterator, Union
 
 from bitstring import ConstBitStream
 from llvmlite import ir  # type: ignore
@@ -24,15 +24,6 @@ class Compiler(object):
     def __init__(self, program: list[bpf.Instruction]):
         self.program = program
 
-    def _get_or_create_block(self, pc: int) -> ir.IRBuilder:
-        try:
-            return self.blocks[pc]
-        except KeyError:
-            assert pc >= self.pc
-            block = self.main_func.append_basic_block()
-            self.blocks[pc] = block
-            return block
-
     def compile(self) -> ir.Module:
         self.module = ir.Module()
         self.main_func = ir.Function(
@@ -47,19 +38,22 @@ class Compiler(object):
         self.store_reg(bpf.Reg.R1, self.main_func.args[0])
         self.store_reg(bpf.Reg.R10, self.builder.ptrtoint(stack_end, I64))
 
-        self.pc = 0
-        self.blocks = {}
-        self.builder.branch(self._get_or_create_block(0))
+        # Create basic blocks
+        self._create_blocks()
 
-        for ins in self.program:
-            if block := self.blocks.get(self.pc):
-                if not self.builder.block.is_terminated:
-                    self.builder.branch(block)
-                self.builder = ir.IRBuilder(block)
-            self._compile(ins)
-            self.pc += ins.size
+        for pc, ins in self._enumerate(self.program):
+            self._compile(pc, ins)
 
         return self.module
+
+    @staticmethod
+    def _enumerate(
+        program: Iterable[bpf.Instruction],
+    ) -> Iterator[tuple[int, bpf.Instruction]]:
+        pc = 0
+        for ins in program:
+            yield pc, ins
+            pc += ins.size
 
     @staticmethod
     def _alloc_stack(builder: ir.IRBuilder, size: int) -> tuple[ir.Value, ir.Value]:
@@ -77,35 +71,63 @@ class Compiler(object):
             register: builder.alloca(I64, name=register.name) for register in bpf.Reg
         }
 
-    def load_reg(self, reg: bpf.Reg, alu64: bool = True) -> ir.Value:
+    def _create_block(self, pc: int):
+        if pc not in self.blocks:
+            self.blocks[pc] = self.builder.append_basic_block(f"L{pc}")
+
+    def _create_blocks(self) -> dict[int, ir.Block]:
+        self.blocks = {}
+        needs_block = True
+
+        for pc, ins in self._enumerate(self.program):
+            if needs_block:
+                self._create_block(pc)
+
+            next_pc = pc + ins.size
+            match ins:
+                case bpf.Jump():
+                    needs_block = True
+                    if ins.jump_offset is not None:
+                        self._create_block(next_pc + ins.jump_offset)
+                case _:
+                    needs_block = False
+
+    def load_reg(self, reg: bpf.Reg, is_64: bool = True) -> ir.Value:
         value = self.builder.load(self.registers[reg])
-        if not alu64:
+        if not is_64:
             value = self.builder.trunc(value, I32)
         return value
+
+    def load_src(self, ins: Union[bpf.Alu, bpf.Jump]) -> ir.Value:
+        match ins.opcode.source:
+            case bpf.Source.K:
+                if ins.is_64:
+                    # imm is int32_t, so this is sign-extension semantics
+                    return I64(ins.imm)
+                else:
+                    return I32(ins.imm)
+            case bpf.Source.X:
+                return self.load_reg(ins.src_reg, ins.is_64)
 
     def store_reg(self, reg: bpf.Reg, value: ir.Value, alu64: bool = True) -> None:
         if not alu64:
             value = self.builder.zext(value, I64)
         self.builder.store(value, self.registers[reg])
 
-    def _compile(self, ins: bpf.Instruction) -> None:
-        self.builder.comment(f"{ins!r}")
+    def _compile(self, pc: int, ins: bpf.Instruction) -> None:
+        if block := self.blocks.get(pc):
+            # XXX(saleem): we should do this in the block analysis phase?
+            if not self.builder.block.is_terminated:
+                self.builder.branch(block)
+            self.builder = ir.IRBuilder(block)
+
+        self.builder.comment(f"{pc=}, {ins!r}")
         match ins:
-            case bpf.Alu(opcode, src_reg, dst_reg, offset, imm):
-                alu64 = opcode.ins_class == bpf.InsClass.ALU64
-                mask = I64(63) if alu64 else I32(31)
+            case bpf.Alu(opcode, _, dst_reg, offset, imm):
+                mask = I64(63) if ins.is_64 else I32(31)
 
-                match opcode.source:
-                    case bpf.Source.K:
-                        if alu64:
-                            # imm is int32_t, so this is sign-extension semantics
-                            src = I64(imm)
-                        else:
-                            src = I32(imm)
-                    case bpf.Source.X:
-                        src = self.load_reg(src_reg, alu64)
-
-                dst = self.load_reg(dst_reg, alu64)
+                src = self.load_src(ins)
+                dst = self.load_reg(dst_reg, ins.is_64)
 
                 match opcode.code:
                     case bpf.AluCode.ADD:
@@ -123,25 +145,30 @@ class Compiler(object):
                     case _:
                         raise NotImplementedError(f"{opcode!r}")
 
-                self.store_reg(dst_reg, dst, alu64)
+                self.store_reg(dst_reg, dst, ins.is_64)
 
-            case bpf.Jump(opcode, src_reg, dst_reg, offset, imm):
-                jmp64 = opcode.ins_class == bpf.InsClass.JMP
-
-                src = self.load_reg(src_reg, jmp64)
-                dst = self.load_reg(dst_reg, jmp64)
+            case bpf.Jump(opcode, _, dst_reg, offset, imm):
+                src = self.load_src(ins)
+                dst = self.load_reg(dst_reg, ins.is_64)
 
                 match opcode.code:
-                    case bpf.JumpCode.JEQ:
-                        # TODO(saleem): Clean this up, move outside match
-                        cond = self.builder.icmp_unsigned("==", dst, src)
-                        truebr = self._get_or_create_block(self.pc + ins.size + offset)
-                        falsebr = self._get_or_create_block(self.pc + ins.size)
-                        self.builder.cbranch(cond, truebr, falsebr)
                     case bpf.JumpCode.EXIT:
                         self.builder.ret(self.load_reg(bpf.Reg.R0))
-                    case _:
-                        raise NotImplementedError(f"{opcode!r}")
+                    case _ as code:
+                        match code:
+                            case bpf.JumpCode.JEQ:
+                                cond = self.builder.icmp_unsigned("==", dst, src)
+                            case _:
+                                raise NotImplementedError(f"{opcode!r}")
+
+                        next_pc = pc + ins.size
+
+                        assert ins.jump_offset is not None
+                        target = next_pc + ins.jump_offset
+
+                        self.builder.cbranch(
+                            cond, self.blocks[target], self.blocks[next_pc]
+                        )
 
             case bpf.LoadImm64(opcode, src, dst_reg, offset):
                 match src:

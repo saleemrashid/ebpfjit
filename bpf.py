@@ -1,5 +1,5 @@
 import enum
-from typing import NamedTuple, Union
+from typing import NamedTuple, Optional, Union
 
 
 class _IntEnum(enum.IntEnum):
@@ -129,6 +129,10 @@ class Alu(NamedTuple):
     def size(self) -> int:
         return 1
 
+    @property
+    def is_64(self) -> bool:
+        return self.opcode.ins_class == InsClass.ALU64
+
 
 class Jump(NamedTuple):
     opcode: JumpOpcode
@@ -140,6 +144,20 @@ class Jump(NamedTuple):
     @property
     def size(self) -> int:
         return 1
+
+    @property
+    def is_64(self) -> bool:
+        return self.opcode.ins_class == InsClass.JMP
+
+    @property
+    def jump_offset(self) -> Optional[int]:
+        match self.opcode.code:
+            case JumpCode.JA if not self.is_64:
+                return self.imm
+            case JumpCode.CALL | JumpCode.EXIT:
+                return None
+            case _:
+                return self.offset
 
 
 class LoadStore(NamedTuple):
