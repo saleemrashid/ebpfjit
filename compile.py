@@ -31,7 +31,7 @@ class Compiler(object):
         )
 
         # Prelude
-        self.builder = ir.IRBuilder(self.main_func.append_basic_block())
+        self.builder = ir.IRBuilder(self.main_func.append_basic_block("entry"))
         (stack_begin, stack_end) = self._alloc_stack(self.builder, 512)
         self.registers = self._alloc_reg(self.builder)
 
@@ -119,26 +119,36 @@ class Compiler(object):
             # XXX(saleem): we should do this in the block analysis phase?
             if not self.builder.block.is_terminated:
                 self.builder.branch(block)
-            self.builder = ir.IRBuilder(block)
+            self.builder.position_at_end(block)
 
         self.builder.comment(f"{pc=}, {ins!r}")
         match ins:
             case bpf.Alu(opcode, _, dst_reg, offset, imm):
                 mask = I64(63) if ins.is_64 else I32(31)
+                zero = I64(0) if ins.is_64 else I32(0)
 
                 src = self.load_src(ins)
                 dst = self.load_reg(dst_reg, ins.is_64)
 
                 match opcode.code:
                     case bpf.AluCode.ADD:
+                        # dst += src
                         dst = self.builder.add(dst, src)
                     case bpf.AluCode.MUL:
+                        # dst *= src
                         dst = self.builder.mul(dst, src)
                     case bpf.AluCode.MOV:
                         dst = src
                     case bpf.AluCode.LSH:
                         # dst <<= (src & mask)
                         dst = self.builder.shl(dst, self.builder.and_(src, mask))
+                    case bpf.AluCode.MOD:
+                        # dst = (src != 0) ? (dst % src) : dst
+                        dst = self.builder.select(
+                            self.builder.icmp_unsigned("!=", src, zero),
+                            self.builder.urem(dst, src),
+                            dst,
+                        )
                     case bpf.AluCode.ARSH:
                         # dst s>>= (src & mask)
                         dst = self.builder.ashr(dst, self.builder.and_(src, mask))
@@ -157,7 +167,11 @@ class Compiler(object):
                     case _ as code:
                         match code:
                             case bpf.JumpCode.JEQ:
+                                # PC += offset if dst == src
                                 cond = self.builder.icmp_unsigned("==", dst, src)
+                            case bpf.JumpCode.JLT:
+                                # PC += offset if dst < src (unsigned)
+                                cond = self.builder.icmp_unsigned("<", dst, src)
                             case _:
                                 raise NotImplementedError(f"{opcode!r}")
 
@@ -166,9 +180,14 @@ class Compiler(object):
                         assert ins.jump_offset is not None
                         target = next_pc + ins.jump_offset
 
-                        self.builder.cbranch(
-                            cond, self.blocks[target], self.blocks[next_pc]
-                        )
+                        if cond is None:
+                            self.builder.branch(self.blocks[target])
+                        else:
+                            self.builder.cbranch(
+                                cond,
+                                self.blocks[target],
+                                self.blocks[next_pc],
+                            )
 
             case bpf.LoadImm64(opcode, src, dst_reg, offset):
                 match src:
