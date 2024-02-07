@@ -1,12 +1,12 @@
 CLANG   := clang
 LLC     := llc
 OBJCOPY	:= llvm-objcopy
-BPFJIT  := python3 ../compile.py
+BPFJIT  := ../compile.py
 
 CFLAGS  := -O2 -Wall
 LDFLAGS :=
 
-TESTS := add hello
+TESTS := add hello ret-if
 
 .SUFFIXES:
 .SECONDARY:
@@ -35,7 +35,7 @@ test-%: %-native.txt %-jit.txt
 %-jit.o: %-jit.ll
 	$(CLANG) $(CFLAGS) -Wno-override-module $< -c -o $@
 
-%-jit.ll: %-bpf.bin
+%-jit.ll: %-bpf.bin $(BPFJIT)
 	$(BPFJIT) $< > $@
 
 %-bpf.ll: %.c

@@ -125,6 +125,10 @@ class Alu(NamedTuple):
     offset: int
     imm: int
 
+    @property
+    def size(self) -> int:
+        return 1
+
 
 class Jump(NamedTuple):
     opcode: JumpOpcode
@@ -133,6 +137,10 @@ class Jump(NamedTuple):
     offset: int
     imm: int
 
+    @property
+    def size(self) -> int:
+        return 1
+
 
 class LoadStore(NamedTuple):
     opcode: LoadStoreOpcode
@@ -140,6 +148,10 @@ class LoadStore(NamedTuple):
     dst_reg: Reg
     offset: int
     imm: int
+
+    @property
+    def size(self) -> int:
+        return 1
 
 
 class LoadSource(_IntEnum):
@@ -161,8 +173,13 @@ class LoadImm64(NamedTuple):
     next_imm: int
 
     @property
+    def size(self) -> int:
+        return 2
+
+    @property
     def imm64(self) -> int:
-        return (self.next_imm << 32) | self.imm32
+        # TODO(saleem): is this sign-extended properly?
+        return (self.next_imm << 32) | (self.imm32 & 0xFFFFFFFF)
 
 
 Opcode = Union[AluOpcode, JumpOpcode, LoadStoreOpcode]
