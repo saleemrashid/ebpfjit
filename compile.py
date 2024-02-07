@@ -148,9 +148,9 @@ class Compiler(object):
                         self.store_reg(dst_reg, result)
                     else:
                         if opcode.ins_class == bpf.InsClass.ST:
-                            src = self.builder.trunc(self.load_reg(src_reg), size_type)
-                        elif opcode.ins_class == bpf.InsClass.STX:
                             src = size_type(imm)
+                        elif opcode.ins_class == bpf.InsClass.STX:
+                            src = self.builder.trunc(self.load_reg(src_reg), size_type)
                         else:
                             raise AssertionError(f"{ins!r}")
 
@@ -163,17 +163,6 @@ class Compiler(object):
 
                 case _:
                     raise NotImplementedError(f"{ins!r}")
-
-
-def compile_program(instructions: list[bpf.Instruction]) -> ir.Module:
-    module = ir.Module()
-
-    func = ir.Function(module, ir.FunctionType(I64, (I64,)), name="bpf_main")
-
-    builder = ir.IRBuilder(func.append_basic_block())
-    builder.ret(ir.Constant(I64, 12345))
-
-    return module
 
 
 if __name__ == "__main__":
