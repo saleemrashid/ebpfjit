@@ -1,6 +1,15 @@
 CLANG   := clang
 LLC     := llc
-OBJCOPY	:= llvm-objcopy
+OBJCOPY := llvm-objcopy
+
+BREW := $(shell command -v brew)
+
+ifneq ($(BREW),)
+LLVM_BINDIR := $(shell $(BREW) --prefix --installed llvm)/bin
+CLANG       := $(LLVM_BINDIR)/$(CLANG)
+LLC         := $(LLVM_BINDIR)/$(LLC)
+OBJCOPY     := $(LLVM_BINDIR)/$(OBJCOPY)
+endif
 
 BPFJIT      := ../compile.py
 BPFJIT_DEPS := ../bpf.py ../disasm.py
