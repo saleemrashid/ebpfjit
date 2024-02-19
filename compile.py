@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from typing import Iterable, Iterator, Union
+from typing import Union
 
 from bitstring import ConstBitStream
 from llvmlite import ir  # type: ignore
@@ -41,19 +41,12 @@ class Compiler(object):
         # Create basic blocks
         self._create_blocks()
 
-        for pc, ins in self._enumerate(self.program):
+        for pc, ins in enumerate(self.program):
+            if ins is None:
+                continue
             self._compile(pc, ins)
 
         return self.module
-
-    @staticmethod
-    def _enumerate(
-        program: Iterable[bpf.Instruction],
-    ) -> Iterator[tuple[int, bpf.Instruction]]:
-        pc = 0
-        for ins in program:
-            yield pc, ins
-            pc += ins.size
 
     @staticmethod
     def _alloc_stack(builder: ir.IRBuilder, size: int) -> tuple[ir.Value, ir.Value]:
@@ -71,23 +64,22 @@ class Compiler(object):
             register: builder.alloca(I64, name=register.name) for register in bpf.Reg
         }
 
-    def _create_block(self, pc: int):
+    def _create_block(self, pc: int) -> None:
         if pc not in self.blocks:
             self.blocks[pc] = self.builder.append_basic_block(f"L{pc}")
 
-    def _create_blocks(self) -> dict[int, ir.Block]:
-        self.blocks = {}
+    def _create_blocks(self) -> None:
+        self.blocks: dict[int, ir.Block] = {}
         needs_block = True
 
-        for pc, ins in self._enumerate(self.program):
+        for pc, ins in enumerate(self.program):
             if needs_block:
                 self._create_block(pc)
-
-            next_pc = pc + ins.size
             match ins:
                 case bpf.Jump():
                     needs_block = True
                     if ins.jump_offset is not None:
+                        next_pc = pc + 1
                         self._create_block(next_pc + ins.jump_offset)
                 case _:
                     needs_block = False
@@ -175,9 +167,9 @@ class Compiler(object):
                             case _:
                                 raise NotImplementedError(f"{opcode!r}")
 
-                        next_pc = pc + ins.size
-
                         assert ins.jump_offset is not None
+
+                        next_pc = pc + 1
                         target = next_pc + ins.jump_offset
 
                         if cond is None:
