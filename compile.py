@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 from typing import Union
 
+from elftools.elf.elffile import ELFFile
 from bitstring import ConstBitStream
 from llvmlite import ir  # type: ignore
 
 import bpf
-import disasm
+from linker import Linker
 
 I8 = ir.IntType(8)
 I16 = ir.IntType(16)
@@ -239,9 +240,12 @@ if __name__ == "__main__":
 
     (filename,) = sys.argv[1:]
 
-    stream = ConstBitStream(filename=filename)
-    program = disasm.disasm(stream)
+    linker = Linker()
+    with open(filename, "rb") as f:
+        elf = ELFFile(f)
+        linker.add_elf(elf)
 
     compiler = Compiler()
-    compiler.add_function("bpf_main", program)
+    for name, program in linker.functions.items():
+        compiler.add_function(name, program)
     print(compiler.module)

@@ -12,7 +12,7 @@ OBJCOPY     := $(LLVM_BINDIR)/$(OBJCOPY)
 endif
 
 BPFJIT      := ../compile.py
-BPFJIT_DEPS := ../bpf.py ../disasm.py
+BPFJIT_DEPS := ../bpf.py ../disasm.py  ../linker.py
 
 CFLAGS  := -O2 -Wall
 LDFLAGS :=
@@ -46,7 +46,7 @@ test-%: %-native.txt %-jit.txt
 %-jit.o: %-jit.ll
 	$(CLANG) $(CFLAGS) -Wno-override-module $< -c -o $@
 
-%-jit.ll: %-bpf.bin $(BPFJIT) $(BPFJIT_DEPS)
+%-jit.ll: %-bpf.o $(BPFJIT) $(BPFJIT_DEPS)
 	$(BPFJIT) $< > $@
 
 %-bpf.ll: %.c
@@ -55,9 +55,6 @@ test-%: %-native.txt %-jit.txt
 %-bpf.o: %-bpf.ll
 	$(LLC) -march=bpfel -mcpu=v3 -filetype=obj $< -o $@
 
-%-bpf.bin: %-bpf.o
-	$(OBJCOPY) -O binary -j .text $< $@
-
 .PHONY: clean
 clean:
-	rm -f *.bin *.o *.ll *-{jit,native}{,.txt}
+	rm -f *.o *.ll *-{jit,native}{,.txt}
