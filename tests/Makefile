@@ -17,7 +17,7 @@ BPFJIT_DEPS := ../bpf.py ../disasm.py  ../linker.py
 CFLAGS  := -O2 -Wall
 LDFLAGS :=
 
-TESTS := add hello ret-if fib
+TESTS := add hello ret-if fib fib-rec
 
 .SUFFIXES:
 .SECONDARY:

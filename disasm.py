@@ -28,7 +28,7 @@ def iter_disasm_one(s: ConstBitStream) -> Iterator[bpf.Instruction]:
             bpf.Source(ins_fields.read("u1")),
             ins_class,
         )
-        yield bpf.Jump(opcode, bpf.Reg(src_reg), dst_reg, offset, imm)
+        yield bpf.Jump(opcode, bpf.Reg(src_reg), dst_reg, offset, imm, None)
     elif ins_class.is_load() or ins_class.is_store():
         opcode = bpf.LoadStoreOpcode(
             bpf.Mode(ins_fields.read("u3")), bpf.Size(ins_fields.read("u2")), ins_class

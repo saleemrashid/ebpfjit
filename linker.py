@@ -48,14 +48,18 @@ class Linker(object):
         return sections[0]
 
     @staticmethod
-    def _iter_relocations(elf: ELFFile, idx: int) -> Iterator[Relocation]:
+    def _iter_relocations(
+        elf: ELFFile, idx: int
+    ) -> Iterator[tuple[SymbolTableSection, Relocation]]:
         for reloc_section in elf.iter_sections():
             if not isinstance(reloc_section, RelocationSection):
                 continue
             if reloc_section["sh_info"] != idx:
                 continue
 
-            yield from reloc_section.iter_relocations()
+            symbol_table = elf.get_section(reloc_section["sh_link"])
+            for reloc in reloc_section.iter_relocations():
+                yield symbol_table, reloc
 
     def add_elf(self, elf: ELFFile) -> None:
         for idx, section in enumerate(elf.iter_sections()):
@@ -68,8 +72,9 @@ class Linker(object):
             if sh_flags & SH_FLAGS.SHF_EXECINSTR:
                 program = disasm.disasm(ConstBitStream(bytes=section.data()))
 
-                for reloc in self._iter_relocations(elf, idx):
-                    ins = program[reloc["r_offset"] // BPF_INSTRUCTION_SIZE]
+                for symbol_table, reloc in self._iter_relocations(elf, idx):
+                    offset = reloc["r_offset"] // BPF_INSTRUCTION_SIZE
+                    ins = program[offset]
                     reloc_type = RelocationType(reloc["r_info_type"])
 
                     match reloc_type:
@@ -87,7 +92,8 @@ class Linker(object):
                             ):
                                 raise ValueError(f"{reloc_type.name} requires BPF_CALL")
 
-                            raise NotImplementedError(reloc_type.name)
+                            symbol = symbol_table.get_symbol(reloc.entry["r_info_sym"])
+                            program[offset] = ins._replace(func=symbol.name)
                         case _:
                             raise NotImplementedError(
                                 f"{reloc_type.name} not supported"

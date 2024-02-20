@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-from typing import Union
+from typing import Union, Iterator
 
-from elftools.elf.elffile import ELFFile
-from bitstring import ConstBitStream
+from elftools.elf.elffile import ELFFile  # type: ignore
 from llvmlite import ir  # type: ignore
 
 import bpf
@@ -24,19 +23,30 @@ BPF_ARGS = 5
 
 
 class Compiler(object):
-    def __init__(self):
+    def __init__(self) -> None:
         self.module = ir.Module()
+        self.functions: dict[str, ir.Function] = {}
         self.blocks: dict[int, ir.Block] = {}
 
-    def add_function(self, name: str, program: list[bpf.Instruction]) -> ir.Module:
-        func = ir.Function(self.module, ir.FunctionType(I64, (I64,) * BPF_ARGS), name)
+    @staticmethod
+    def _args_regs() -> Iterator[bpf.Reg]:
+        for i in range(BPF_ARGS):
+            yield bpf.Reg(bpf.Reg.R1 + i)
+
+    def declare_function(self, name: str):
+        self.functions[name] = ir.Function(
+            self.module, ir.FunctionType(I64, (I64,) * BPF_ARGS), name
+        )
+
+    def compile_function(self, name: str, program: list[bpf.Instruction]) -> ir.Module:
+        func = self.functions[name]
 
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
         (stack_begin, stack_end) = self._alloc_stack(self.builder, 512)
         self.registers = self._alloc_reg(self.builder)
-        for i, arg in enumerate(func.args):
-            self.store_reg(bpf.Reg.R1 + i, arg)
+        for reg, arg in zip(self._args_regs(), func.args):
+            self.store_reg(reg, arg)
         self.store_reg(bpf.Reg.R10, self.builder.ptrtoint(stack_end, I64))
 
         # Create basic blocks
@@ -154,21 +164,41 @@ class Compiler(object):
 
                 self.store_reg(dst_reg, dst, ins.is_64)
 
-            case bpf.Jump(opcode, _, dst_reg, offset, imm):
-                src = self.load_src(ins)
-                dst = self.load_reg(dst_reg, ins.is_64)
-
+            case bpf.Jump(opcode, _, dst_reg, offset, imm, func_name):
                 match opcode.code:
+                    case bpf.JumpCode.CALL:
+                        if func_name is None:
+                            raise NotImplementedError(
+                                f"{opcode.code.name} missing function name"
+                            )
+                        else:
+                            func = self.functions[func_name]
+                            args = [self.load_reg(reg) for reg in self._args_regs()]
+
+                            ret = self.builder.call(func, args)
+                            # Store return value in R0
+                            self.store_reg(bpf.Reg.R0, ret)
+                            # Clobber caller-saved registers
+                            for reg in self._args_regs():
+                                self.store_reg(reg, I64(ir.Undefined))
                     case bpf.JumpCode.EXIT:
                         self.builder.branch(self.exit_block)
                     case _ as code:
+                        src = self.load_src(ins)
+                        dst = self.load_reg(dst_reg, ins.is_64)
                         match code:
                             case bpf.JumpCode.JEQ:
                                 # PC += offset if dst == src
                                 cond = self.builder.icmp_unsigned("==", dst, src)
+                            case bpf.JumpCode.JGT:
+                                # PC += offset if dst > src (unsigned)
+                                cond = self.builder.icmp_unsigned(">", dst, src)
                             case bpf.JumpCode.JLT:
                                 # PC += offset if dst < src (unsigned)
                                 cond = self.builder.icmp_unsigned("<", dst, src)
+                            case bpf.JumpCode.JSLT:
+                                # PC += offset if dst < src (signed)
+                                cond = self.builder.icmp_signed("<", dst, src)
                             case _:
                                 raise NotImplementedError(f"{opcode!r}")
 
@@ -246,6 +276,8 @@ if __name__ == "__main__":
         linker.add_elf(elf)
 
     compiler = Compiler()
+    for name in linker.functions.keys():
+        compiler.declare_function(name)
     for name, program in linker.functions.items():
-        compiler.add_function(name, program)
+        compiler.compile_function(name, program)
     print(compiler.module)
