@@ -19,34 +19,38 @@ BPF_SIZE_TO_TYPE = {
     bpf.Size.DW: I64,
 }
 
+BPF_ARGS = 5
+
 
 class Compiler(object):
-    def __init__(self, program: list[bpf.Instruction]):
-        self.program = program
-
-    def compile(self) -> ir.Module:
+    def __init__(self):
         self.module = ir.Module()
-        self.main_func = ir.Function(
-            self.module, ir.FunctionType(I64, (I64,)), "bpf_main"
-        )
+        self.blocks: dict[int, ir.Block] = {}
+
+    def add_function(self, name: str, program: list[bpf.Instruction]) -> ir.Module:
+        func = ir.Function(self.module, ir.FunctionType(I64, (I64,) * BPF_ARGS), name)
 
         # Prelude
-        self.builder = ir.IRBuilder(self.main_func.append_basic_block("entry"))
+        self.builder = ir.IRBuilder(func.append_basic_block("entry"))
         (stack_begin, stack_end) = self._alloc_stack(self.builder, 512)
         self.registers = self._alloc_reg(self.builder)
-
-        self.store_reg(bpf.Reg.R1, self.main_func.args[0])
+        for i, arg in enumerate(func.args):
+            self.store_reg(bpf.Reg.R1 + i, arg)
         self.store_reg(bpf.Reg.R10, self.builder.ptrtoint(stack_end, I64))
 
         # Create basic blocks
-        self._create_blocks()
+        self._create_blocks(program)
+        self.exit_block = func.append_basic_block("exit")
 
-        for pc, ins in enumerate(self.program):
+        # builder should point to entry, so _compile will branch to the first block
+        for pc, ins in enumerate(program):
             if ins is None:
                 continue
             self._compile(pc, ins)
 
-        return self.module
+        # Epilogue
+        self.builder.position_at_end(self.exit_block)
+        self.builder.ret(self.load_reg(bpf.Reg.R0))
 
     @staticmethod
     def _alloc_stack(builder: ir.IRBuilder, size: int) -> tuple[ir.Value, ir.Value]:
@@ -68,11 +72,11 @@ class Compiler(object):
         if pc not in self.blocks:
             self.blocks[pc] = self.builder.append_basic_block(f"L{pc}")
 
-    def _create_blocks(self) -> None:
-        self.blocks: dict[int, ir.Block] = {}
+    def _create_blocks(self, program: list[bpf.Instruction]) -> None:
+        self.blocks.clear()
         needs_block = True
 
-        for pc, ins in enumerate(self.program):
+        for pc, ins in enumerate(program):
             if needs_block:
                 self._create_block(pc)
             match ins:
@@ -155,7 +159,7 @@ class Compiler(object):
 
                 match opcode.code:
                     case bpf.JumpCode.EXIT:
-                        self.builder.ret(self.load_reg(bpf.Reg.R0))
+                        self.builder.branch(self.exit_block)
                     case _ as code:
                         match code:
                             case bpf.JumpCode.JEQ:
@@ -237,5 +241,7 @@ if __name__ == "__main__":
 
     stream = ConstBitStream(filename=filename)
     program = disasm.disasm(stream)
-    compiler = Compiler(program)
-    print(compiler.compile())
+
+    compiler = Compiler()
+    compiler.add_function("bpf_main", program)
+    print(compiler.module)
