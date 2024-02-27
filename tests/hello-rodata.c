@@ -6,5 +6,12 @@ unsigned long bpf_main(void) {
   for (unsigned int i = 0; i < 5; i++) {
     hash = ((hash << 5) + hash) + s[i];
   }
+
+  s = "World";
+  asm volatile("" : "+r,m"(s)::"memory");
+
+  for (unsigned int i = 0; i < 5; i++) {
+    hash = ((hash << 5) + hash) + ("World")[i];
+  }
   return hash;
 }

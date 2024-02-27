@@ -20,6 +20,7 @@ BPF_SIZE_TO_TYPE = {
 }
 
 BPF_ARGS = 5
+BPF_FUNC_TYPE = ir.FunctionType(I64, (I64,) * BPF_ARGS)
 
 
 class Compiler(object):
@@ -38,7 +39,7 @@ class Compiler(object):
         self.functions[name] = ir.Function(self.module, type, name)
 
     def declare_function(self, name: str, pc: int) -> None:
-        self.extern_function(name, ir.FunctionType(I64, (I64,) * BPF_ARGS))
+        self.extern_function(name, BPF_FUNC_TYPE)
         # XXX(saleem): extern_function should probably return ir.Function
         self.function_addrs[pc] = self.functions[name]
 
@@ -175,24 +176,30 @@ class Compiler(object):
             case bpf.Jump(opcode, _, dst_reg, offset, imm, symbol):
                 match opcode.code:
                     case bpf.JumpCode.CALL:
-                        print(f"{self.builder.function.name} {ins!r}", file=sys.stderr)
                         if opcode.source == bpf.Source.X:
-                            pass
+                            # FIXME(saleem): check the function target of course
+                            func = self.builder.inttoptr(
+                                self.load_reg(bpf.Reg(imm)), BPF_FUNC_TYPE.as_pointer()
+                            )
                         else:
                             if symbol is None:
-                                raise NotImplementedError(
-                                    f"{opcode.code.name} missing function name"
-                                )
+                                addr = pc + 1 + imm
+                                try:
+                                    func = self.function_addrs[addr]
+                                except KeyError:
+                                    raise ValueError(
+                                        f"invalid pc-relative CALL: {addr!r}"
+                                    )
+                            else:
+                                func = self.functions[symbol]
 
-                            func = self.functions[symbol]
-                            args = [self.load_reg(reg) for reg in self._args_regs()]
-
-                            ret = self.builder.call(func, args)
-                            # Store return value in R0
-                            self.store_reg(bpf.Reg.R0, ret)
-                            # Clobber caller-saved registers
-                            for reg in self._args_regs():
-                                self.store_reg(reg, I64(ir.Undefined))
+                        args = [self.load_reg(reg) for reg in self._args_regs()]
+                        ret = self.builder.call(func, args)
+                        # Store return value in R0
+                        self.store_reg(bpf.Reg.R0, ret)
+                        # Clobber caller-saved registers
+                        for reg in self._args_regs():
+                            self.store_reg(reg, I64(ir.Undefined))
                     case bpf.JumpCode.EXIT:
                         self.builder.branch(self.exit_block)
                     case _ as code:
@@ -228,10 +235,16 @@ class Compiler(object):
                                 self.blocks[next_pc],
                             )
 
-            case bpf.LoadImm64(opcode, src, dst_reg, offset):
+            case bpf.LoadImm64(opcode, src, dst_reg, offset, _, _, addr):
                 match src:
                     case bpf.LoadSource.IMM64:
-                        result = I64(ins.imm64)
+                        if addr is None:
+                            result = I64(ins.imm64)
+                        else:
+                            # FIXME(saleem): this is broken for non-text, but lets us do function pointers for now
+                            result = self.builder.ptrtoint(
+                                self.function_addrs[ins.addr], I64
+                            )
                     case _:
                         raise NotImplementedError(f"{src!r}")
 
@@ -286,8 +299,6 @@ if __name__ == "__main__":
     with open(filename, "rb") as f:
         elf = ELFFile(f)
         linker.add_elf(elf)
-
-    print(linker.functions, file=sys.stderr)
 
     compiler = Compiler()
 

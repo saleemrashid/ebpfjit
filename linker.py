@@ -91,7 +91,9 @@ class Linker(object):
                                     f"{reloc_type.name} requires BPF_LD imm64"
                                 )
 
-                            program[offset] = ins._replace(symbol=symbol.name)
+                            program[offset] = ins._replace(
+                                addr=len(self.text) + ins.imm64 // BPF_INSTRUCTION_SIZE
+                            )
 
                         case RelocationType.R_BPF_64_32:
                             if (

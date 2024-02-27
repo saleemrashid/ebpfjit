@@ -178,7 +178,7 @@ class LoadImm64(NamedTuple):
     offset: int
     imm32: int
     next_imm: int
-    symbol: Optional[str]
+    addr: Optional[int]
 
     @property
     def imm64(self) -> int:
