@@ -33,9 +33,10 @@ class Compiler(object):
         for i in range(BPF_ARGS):
             yield bpf.Reg(bpf.Reg.R1 + i)
 
-    def declare_function(self, name: str):
+    # TODO(saleem): Remove the var_arg parameter
+    def declare_function(self, name: str, args: int = BPF_ARGS, var_arg: bool = False):
         self.functions[name] = ir.Function(
-            self.module, ir.FunctionType(I64, (I64,) * BPF_ARGS), name
+            self.module, ir.FunctionType(I64, (I64,) * args, var_arg), name
         )
 
     def compile_function(self, name: str, program: list[bpf.Instruction]) -> ir.Module:
@@ -276,8 +277,13 @@ if __name__ == "__main__":
         linker.add_elf(elf)
 
     compiler = Compiler()
+
+    # TODO(saleem): implement helper functions
+    compiler.declare_function("printf", 1, True)
+
     for name in linker.functions.keys():
         compiler.declare_function(name)
     for name, program in linker.functions.items():
         compiler.compile_function(name, program)
+
     print(compiler.module)

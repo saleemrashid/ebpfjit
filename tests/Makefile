@@ -17,7 +17,10 @@ BPFJIT_DEPS := ../bpf.py ../disasm.py  ../linker.py
 CFLAGS  := -O2 -Wall
 LDFLAGS :=
 
-TESTS := add hello ret-if fib fib-rec
+BPF_CFLAGS   := -target bpfel -fno-builtin
+BPF_LLCFLAGS := -march=bpfel -mcpu=v3
+
+TESTS := add hello ret-if fib fib-rec printf
 
 .SUFFIXES:
 .SECONDARY:
@@ -50,10 +53,10 @@ test-%: %-native.txt %-jit.txt
 	$(BPFJIT) $< > $@
 
 %-bpf.ll: %.c
-	$(CLANG) $(CFLAGS) -target bpfel -S -emit-llvm -c $< -o $@
+	$(CLANG) $(CFLAGS) $(BPF_CFLAGS) -S -emit-llvm -c $< -o $@
 
 %-bpf.o: %-bpf.ll
-	$(LLC) -march=bpfel -mcpu=v3 -filetype=obj $< -o $@
+	$(LLC) $(BPF_LLCFLAGS) -filetype=obj $< -o $@
 
 .PHONY: clean
 clean:

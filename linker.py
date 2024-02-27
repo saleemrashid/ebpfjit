@@ -112,7 +112,8 @@ class Linker(object):
                 raise NotImplementedError(".data section")
             # .rodata
             else:
-                print(".rodata", section)
+                # raise NotImplementedError(".rodata section")
+                pass
 
 
 if __name__ == "__main__":
