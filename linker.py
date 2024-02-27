@@ -1,5 +1,5 @@
 import enum
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 from bitstring import ConstBitStream
 from elftools.elf.constants import SH_FLAGS  # type: ignore
@@ -18,10 +18,16 @@ class RelocationType(enum.IntEnum):
     R_BPF_64_32 = 10
 
 
+class Function(NamedTuple):
+    start: int
+    end: int
+
+
 class Linker(object):
     def __init__(self) -> None:
-        self.functions: dict[str, list[bpf.Instruction]] = {}
+        self.text: list[bpf.Instruction] = []
         self.rodata = bytearray()
+        self.functions: dict[str, Function] = {}
 
     @staticmethod
     def _iter_symbols(elf: ELFFile, idx: int) -> Iterator[Symbol]:
@@ -76,6 +82,7 @@ class Linker(object):
                     offset = reloc["r_offset"] // BPF_INSTRUCTION_SIZE
                     ins = program[offset]
                     reloc_type = RelocationType(reloc["r_info_type"])
+                    symbol = symbol_table.get_symbol(reloc["r_info_sym"])
 
                     match reloc_type:
                         case RelocationType.R_BPF_64_64:
@@ -84,7 +91,8 @@ class Linker(object):
                                     f"{reloc_type.name} requires BPF_LD imm64"
                                 )
 
-                            raise NotImplementedError(reloc_type.name)
+                            program[offset] = ins._replace(symbol=symbol.name)
+
                         case RelocationType.R_BPF_64_32:
                             if (
                                 not isinstance(ins, bpf.Jump)
@@ -92,8 +100,7 @@ class Linker(object):
                             ):
                                 raise ValueError(f"{reloc_type.name} requires BPF_CALL")
 
-                            symbol = symbol_table.get_symbol(reloc.entry["r_info_sym"])
-                            program[offset] = ins._replace(func=symbol.name)
+                            program[offset] = ins._replace(symbol=symbol.name)
                         case _:
                             raise NotImplementedError(
                                 f"{reloc_type.name} not supported"
@@ -106,7 +113,11 @@ class Linker(object):
 
                     start = symbol["st_value"] // BPF_INSTRUCTION_SIZE
                     size = symbol["st_size"] // BPF_INSTRUCTION_SIZE
-                    self.functions[symbol.name] = program[start : start + size]
+                    self.functions[symbol.name] = Function(
+                        len(self.text) + start, len(self.text) + start + size
+                    )
+
+                self.text.extend(program)
             # .data
             elif sh_flags & SH_FLAGS.SHF_WRITE:
                 raise NotImplementedError(".data section")

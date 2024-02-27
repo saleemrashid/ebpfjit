@@ -48,7 +48,7 @@ def iter_disasm_one(s: ConstBitStream) -> Iterator[bpf.Instruction]:
             next_imm = s.read("intle32")
 
             yield bpf.LoadImm64(
-                opcode, bpf.LoadSource(src_reg), dst_reg, offset, imm, next_imm
+                opcode, bpf.LoadSource(src_reg), dst_reg, offset, imm, next_imm, None
             )
             yield None
         else:

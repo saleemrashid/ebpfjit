@@ -136,7 +136,7 @@ class Jump(NamedTuple):
     dst_reg: Reg
     offset: int
     imm: int
-    func: Optional[str]
+    symbol: Optional[str]
 
     @property
     def is_64(self) -> bool:
@@ -178,6 +178,7 @@ class LoadImm64(NamedTuple):
     offset: int
     imm32: int
     next_imm: int
+    symbol: Optional[str]
 
     @property
     def imm64(self) -> int:

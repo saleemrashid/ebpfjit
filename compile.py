@@ -26,6 +26,7 @@ class Compiler(object):
     def __init__(self) -> None:
         self.module = ir.Module()
         self.functions: dict[str, ir.Function] = {}
+        self.function_addrs: dict[int, ir.Function] = {}
         self.blocks: dict[int, ir.Block] = {}
 
     @staticmethod
@@ -33,13 +34,17 @@ class Compiler(object):
         for i in range(BPF_ARGS):
             yield bpf.Reg(bpf.Reg.R1 + i)
 
-    # TODO(saleem): Remove the var_arg parameter
-    def declare_function(self, name: str, args: int = BPF_ARGS, var_arg: bool = False):
-        self.functions[name] = ir.Function(
-            self.module, ir.FunctionType(I64, (I64,) * args, var_arg), name
-        )
+    def extern_function(self, name: str, type: ir.FunctionType) -> None:
+        self.functions[name] = ir.Function(self.module, type, name)
 
-    def compile_function(self, name: str, program: list[bpf.Instruction]) -> ir.Module:
+    def declare_function(self, name: str, pc: int) -> None:
+        self.extern_function(name, ir.FunctionType(I64, (I64,) * BPF_ARGS))
+        # XXX(saleem): extern_function should probably return ir.Function
+        self.function_addrs[pc] = self.functions[name]
+
+    def compile_function(
+        self, name: str, start: int, end: int, text: list[bpf.Instruction]
+    ) -> ir.Module:
         func = self.functions[name]
 
         # Prelude
@@ -51,11 +56,12 @@ class Compiler(object):
         self.store_reg(bpf.Reg.R10, self.builder.ptrtoint(stack_end, I64))
 
         # Create basic blocks
-        self._create_blocks(program)
+        self._create_blocks(text, start, end)
         self.exit_block = func.append_basic_block("exit")
 
         # builder should point to entry, so _compile will branch to the first block
-        for pc, ins in enumerate(program):
+        for pc in range(start, end):
+            ins = text[pc]
             if ins is None:
                 continue
             self._compile(pc, ins)
@@ -84,11 +90,12 @@ class Compiler(object):
         if pc not in self.blocks:
             self.blocks[pc] = self.builder.append_basic_block(f"L{pc}")
 
-    def _create_blocks(self, program: list[bpf.Instruction]) -> None:
+    def _create_blocks(self, text: list[bpf.Instruction], start: int, end: int) -> None:
         self.blocks.clear()
         needs_block = True
 
-        for pc, ins in enumerate(program):
+        for pc in range(start, end):
+            ins = text[pc]
             if needs_block:
                 self._create_block(pc)
             match ins:
@@ -165,15 +172,19 @@ class Compiler(object):
 
                 self.store_reg(dst_reg, dst, ins.is_64)
 
-            case bpf.Jump(opcode, _, dst_reg, offset, imm, func_name):
+            case bpf.Jump(opcode, _, dst_reg, offset, imm, symbol):
                 match opcode.code:
                     case bpf.JumpCode.CALL:
-                        if func_name is None:
-                            raise NotImplementedError(
-                                f"{opcode.code.name} missing function name"
-                            )
+                        print(f"{self.builder.function.name} {ins!r}", file=sys.stderr)
+                        if opcode.source == bpf.Source.X:
+                            pass
                         else:
-                            func = self.functions[func_name]
+                            if symbol is None:
+                                raise NotImplementedError(
+                                    f"{opcode.code.name} missing function name"
+                                )
+
+                            func = self.functions[symbol]
                             args = [self.load_reg(reg) for reg in self._args_regs()]
 
                             ret = self.builder.call(func, args)
@@ -276,14 +287,16 @@ if __name__ == "__main__":
         elf = ELFFile(f)
         linker.add_elf(elf)
 
+    print(linker.functions, file=sys.stderr)
+
     compiler = Compiler()
 
     # TODO(saleem): implement helper functions
-    compiler.declare_function("printf", 1, True)
+    compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
 
-    for name in linker.functions.keys():
-        compiler.declare_function(name)
-    for name, program in linker.functions.items():
-        compiler.compile_function(name, program)
+    for name, func in linker.functions.items():
+        compiler.declare_function(name, func.start)
+    for name, func in linker.functions.items():
+        compiler.compile_function(name, func.start, func.end, linker.text)
 
     print(compiler.module)
