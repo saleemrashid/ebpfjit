@@ -1,0 +1,3 @@
+[[tool.mypy.overrides]]
+module = "elftools.*"
+ignore_missing_imports = true

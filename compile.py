@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-from typing import Union, Iterator
+from typing import Iterator, Union
 
-from elftools.elf.elffile import ELFFile  # type: ignore
+from elftools.elf.elffile import ELFFile
 from llvmlite import ir  # type: ignore
 
 import bpf
-from linker import Linker
+from linker import Linker, SectionId
 
 I8 = ir.IntType(8)
 I16 = ir.IntType(16)
@@ -26,8 +26,7 @@ BPF_FUNC_TYPE = ir.FunctionType(I64, (I64,) * BPF_ARGS)
 class Compiler(object):
     def __init__(self) -> None:
         self.module = ir.Module()
-        self.functions: dict[str, ir.Function] = {}
-        self.function_addrs: dict[int, ir.Function] = {}
+        self.symbols: dict[str, ir.Value] = {}
         self.blocks: dict[int, ir.Block] = {}
 
     @staticmethod
@@ -36,17 +35,22 @@ class Compiler(object):
             yield bpf.Reg(bpf.Reg.R1 + i)
 
     def extern_function(self, name: str, type: ir.FunctionType) -> None:
-        self.functions[name] = ir.Function(self.module, type, name)
+        # TODO(saleem): check conflicts
+        self.symbols[name] = ir.Function(self.module, type, name)
+
+    def add_rodata(self, name: str, data: bytes) -> None:
+        value = ir.Constant.literal_array([I8(x) for x in data])
+        variable = ir.GlobalVariable(self.module, value.type, name)
+        variable.initializer = value
+        self.symbols[name] = variable
 
     def declare_function(self, name: str, pc: int) -> None:
         self.extern_function(name, BPF_FUNC_TYPE)
-        # XXX(saleem): extern_function should probably return ir.Function
-        self.function_addrs[pc] = self.functions[name]
 
     def compile_function(
         self, name: str, start: int, end: int, text: list[bpf.Instruction]
     ) -> ir.Module:
-        func = self.functions[name]
+        func = self.symbols[name]
 
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
@@ -182,16 +186,7 @@ class Compiler(object):
                                 self.load_reg(bpf.Reg(imm)), BPF_FUNC_TYPE.as_pointer()
                             )
                         else:
-                            if symbol is None:
-                                addr = pc + 1 + imm
-                                try:
-                                    func = self.function_addrs[addr]
-                                except KeyError:
-                                    raise ValueError(
-                                        f"invalid pc-relative CALL: {addr!r}"
-                                    )
-                            else:
-                                func = self.functions[symbol]
+                            func = self.symbols[symbol.name]
 
                         args = [self.load_reg(reg) for reg in self._args_regs()]
                         ret = self.builder.call(func, args)
@@ -241,9 +236,10 @@ class Compiler(object):
                         if addr is None:
                             result = I64(ins.imm64)
                         else:
-                            # FIXME(saleem): this is broken for non-text, but lets us do function pointers for now
-                            result = self.builder.ptrtoint(
-                                self.function_addrs[ins.addr], I64
+                            # TODO(saleem): this should probably check that imm64 == 0 for non-pointers
+                            result = self.builder.add(
+                                self.builder.ptrtoint(self.symbols[ins.addr.name], I64),
+                                I64(ins.imm64),
                             )
                     case _:
                         raise NotImplementedError(f"{src!r}")
@@ -305,9 +301,20 @@ if __name__ == "__main__":
     # TODO(saleem): implement helper functions
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
 
-    for name, func in linker.functions.items():
-        compiler.declare_function(name, func.start)
-    for name, func in linker.functions.items():
-        compiler.compile_function(name, func.start, func.end, linker.text)
+    # TODO(saleem): this is hacky, but I'm prototyping the compiler API so it doesn't matter
+
+    for symbol_id, symbol in linker.symbols.items():
+        if symbol.section == SectionId.Text:
+            compiler.declare_function(symbol_id.name, symbol.start // 8)
+        elif symbol.section == SectionId.Rodata:
+            compiler.add_rodata(
+                symbol_id.name,
+                linker.sections[SectionId.Rodata][symbol.start : symbol.end],
+            )
+    for symbol_id, symbol in linker.symbols.items():
+        if symbol.section == SectionId.Text:
+            compiler.compile_function(
+                symbol_id.name, symbol.start // 8, symbol.end // 8, linker.program
+            )
 
     print(compiler.module)

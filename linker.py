@@ -1,11 +1,13 @@
 import enum
-from typing import Iterator, NamedTuple
+from typing import Iterator, NamedTuple, Optional
 
 from bitstring import ConstBitStream
-from elftools.elf.constants import SH_FLAGS  # type: ignore
-from elftools.elf.elffile import ELFFile  # type: ignore
-from elftools.elf.relocation import Relocation, RelocationSection  # type: ignore
-from elftools.elf.sections import Symbol, SymbolTableSection  # type: ignore
+from elftools.elf.constants import SH_FLAGS
+from elftools.elf.elffile import ELFFile
+from elftools.elf.relocation import Relocation, RelocationSection
+from elftools.elf.sections import Section as ELFSection
+from elftools.elf.sections import Symbol as ELFSymbol
+from elftools.elf.sections import SymbolTableSection
 
 import bpf
 import disasm
@@ -18,19 +20,37 @@ class RelocationType(enum.IntEnum):
     R_BPF_64_32 = 10
 
 
-class Function(NamedTuple):
+class SectionId(enum.Enum):
+    Text = enum.auto()
+    Rodata = enum.auto()
+    Data = enum.auto()
+
+
+class SymbolId(NamedTuple):
+    name: str
+    section: bool
+    file_idx: Optional[int] = None
+
+
+class Symbol(NamedTuple):
+    section: SectionId
     start: int
     end: int
 
 
 class Linker(object):
     def __init__(self) -> None:
-        self.text: list[bpf.Instruction] = []
-        self.rodata = bytearray()
-        self.functions: dict[str, Function] = {}
+        self.sections: dict[SectionId, bytearray] = {
+            section_id: bytearray() for section_id in SectionId
+        }
+        self.addrs: dict[SectionId, dict[int, SymbolId]] = {
+            section_id: {} for section_id in SectionId
+        }
+        self.symbols: dict[SymbolId, Symbol] = {}
+        self.program: list[bpf.Instruction] = []
 
     @staticmethod
-    def _iter_symbols(elf: ELFFile, idx: int) -> Iterator[Symbol]:
+    def _iter_symbols(elf: ELFFile, idx: int) -> Iterator[ELFSymbol]:
         for symbol_table in elf.iter_sections():
             if not isinstance(symbol_table, SymbolTableSection):
                 continue
@@ -67,66 +87,175 @@ class Linker(object):
             for reloc in reloc_section.iter_relocations():
                 yield symbol_table, reloc
 
-    def add_elf(self, elf: ELFFile) -> None:
-        for idx, section in enumerate(elf.iter_sections()):
-            sh_flags = section["sh_flags"]
+    @staticmethod
+    def _section_id(section: ELFSection) -> Optional[SectionId]:
+        sh_flags = section["sh_flags"]
 
-            if not sh_flags & SH_FLAGS.SHF_ALLOC:
+        if not sh_flags & SH_FLAGS.SHF_ALLOC:
+            return None
+
+        if sh_flags & SH_FLAGS.SHF_EXECINSTR:
+            return SectionId.Text
+        elif sh_flags & SH_FLAGS.SHF_WRITE:
+            raise NotImplementedError(".data section")
+        else:
+            return SectionId.Rodata
+
+    @staticmethod
+    def _symbol_id(
+        file_idx: int, elf: ELFFile, symbol: ELFSymbol
+    ) -> Optional[SymbolId]:
+        st_bind = symbol["st_info"]["bind"]
+        st_type = symbol["st_info"]["type"]
+
+        if st_bind == "STB_LOCAL":
+            local = True
+        elif st_bind == "STB_GLOBAL":
+            local = False
+        else:
+            raise NotImplementedError(f"symbol bind {st_bind!r}")
+
+        if local and st_type == "STT_NOTYPE":
+            return None
+        elif st_type == "STT_SECTION":
+            name = elf.get_section(symbol["st_shndx"]).name
+            section = True
+        elif st_type in (
+            "STT_NOTYPE",
+            "STT_FUNC",
+        ):
+            name = symbol.name
+            section = False
+        else:
+            raise NotImplementedError(f"symbol type {st_type!r}")
+
+        if local:
+            return SymbolId(name, section, file_idx)
+        else:
+            return SymbolId(name, section)
+
+    def _add_elf_section(
+        self, file_idx: int, section_id: SectionId, elf: ELFFile, idx: int
+    ) -> None:
+        elf_section = elf.get_section(idx)
+        data = elf_section.data()
+
+        raw_section = self.sections[section_id]
+        addrs = self.addrs[section_id]
+
+        addr_offset = len(raw_section)
+        raw_section.extend(data)
+
+        for symbol in self._iter_symbols(elf, idx):
+            symbol_id = self._symbol_id(file_idx, elf, symbol)
+            if symbol_id is None:
                 continue
 
-            # .text
-            if sh_flags & SH_FLAGS.SHF_EXECINSTR:
-                program = disasm.disasm(ConstBitStream(bytes=section.data()))
+            value = symbol["st_value"]
+            size = symbol["st_size"]
 
-                for symbol_table, reloc in self._iter_relocations(elf, idx):
-                    offset = reloc["r_offset"] // BPF_INSTRUCTION_SIZE
-                    ins = program[offset]
-                    reloc_type = RelocationType(reloc["r_info_type"])
-                    symbol = symbol_table.get_symbol(reloc["r_info_sym"])
+            start = addr_offset + value
+            end = start + size
 
-                    match reloc_type:
-                        case RelocationType.R_BPF_64_64:
-                            if not isinstance(ins, bpf.LoadImm64):
-                                raise ValueError(
-                                    f"{reloc_type.name} requires BPF_LD imm64"
-                                )
+            # TODO(saleem): check uniqueness
+            self.symbols[symbol_id] = Symbol(section_id, start, end)
+            if not symbol_id.section:
+                addrs[start] = symbol_id
 
-                            program[offset] = ins._replace(
-                                addr=len(self.text) + ins.imm64 // BPF_INSTRUCTION_SIZE
-                            )
+        self.symbols[SymbolId(elf_section.name, True, file_idx)] = Symbol(
+            section_id, addr_offset, len(data)
+        )
 
-                        case RelocationType.R_BPF_64_32:
-                            if (
-                                not isinstance(ins, bpf.Jump)
-                                or ins.opcode.code != bpf.JumpCode.CALL
-                            ):
-                                raise ValueError(f"{reloc_type.name} requires BPF_CALL")
+    def _add_elf_relocs(
+        self, file_idx: int, section_id: SectionId, elf: ELFFile, idx: int
+    ) -> None:
+        if section_id != SectionId.Text:
+            return
 
-                            program[offset] = ins._replace(symbol=symbol.name)
-                        case _:
-                            raise NotImplementedError(
-                                f"{reloc_type.name} not supported"
-                            )
+        elf_section = elf.get_section(idx)
 
-                for symbol in self._iter_symbols(elf, idx):
-                    st_type = symbol["st_info"]["type"]
-                    if st_type != "STT_FUNC":
+        func_addrs = self.addrs[SectionId.Text]
+        addr_offset = self.symbols[SymbolId(elf_section.name, True, file_idx)].start
+
+        program = disasm.disasm(ConstBitStream(bytes=elf_section.data()))
+
+        for symbol_table, reloc in self._iter_relocations(elf, idx):
+            elf_symbol = symbol_table.get_symbol(reloc["r_info_sym"])
+            symbol_id = self._symbol_id(file_idx, elf, elf_symbol)
+
+            if symbol_id is None:
+                raise ValueError(f"invalid relocation for symbol {elf_symbol.name!r}")
+
+            pc = reloc["r_offset"] // BPF_INSTRUCTION_SIZE
+            ins = program[pc]
+
+            reloc_type = RelocationType(reloc["r_info_type"])
+            match reloc_type:
+                case RelocationType.R_BPF_64_64:
+                    if not isinstance(ins, bpf.LoadImm64):
+                        raise ValueError(f"{reloc_type.name} requires BPF_LD imm64")
+
+                    try:
+                        base_symbol = self.symbols[symbol_id]
+                    except KeyError:
+                        pass
+                    else:
+                        if base_symbol.section == SectionId.Text:
+                            symbol_id = func_addrs[base_symbol.start + ins.imm64]
+                            ins = ins._replace(imm32=0, next_imm=0)
+
+                    program[pc] = ins._replace(addr=symbol_id)
+
+                case RelocationType.R_BPF_64_32:
+                    if (
+                        not isinstance(ins, bpf.Jump)
+                        or ins.opcode.code != bpf.JumpCode.CALL
+                    ):
+                        raise ValueError(f"{reloc_type.name} requires BPF_CALL")
+
+                    program[pc] = ins._replace(symbol=symbol_id)
+
+                case _:
+                    raise NotImplementedError(f"{reloc_type.name} not supported")
+
+        for pc, ins in enumerate(program):
+            match ins:
+                case bpf.Jump(
+                    opcode=bpf.JumpOpcode(code=bpf.JumpCode.CALL, source=bpf.Source.K)
+                ):
+                    if ins.symbol is not None:
                         continue
 
-                    start = symbol["st_value"] // BPF_INSTRUCTION_SIZE
-                    size = symbol["st_size"] // BPF_INSTRUCTION_SIZE
-                    self.functions[symbol.name] = Function(
-                        len(self.text) + start, len(self.text) + start + size
-                    )
+                    addr = addr_offset + (pc + 1 + ins.imm) * BPF_INSTRUCTION_SIZE
+                    program[pc] = ins._replace(symbol=func_addrs[addr])
 
-                self.text.extend(program)
-            # .data
-            elif sh_flags & SH_FLAGS.SHF_WRITE:
-                raise NotImplementedError(".data section")
-            # .rodata
-            else:
-                # raise NotImplementedError(".rodata section")
-                pass
+        self.program.extend(program)
+
+        if False:
+            addend = int.from_bytes(
+                data[reloc["r_offset"] + 4 :][:4], "little", signed=True
+            )
+
+            print(f"before: {symbol_id!r}, {addend = !r}")
+
+            if addend:
+                base_symbol = self.symbols[symbol_id]
+                symbol_id = self.addrs[base_symbol.section][base_symbol.start + addend]
+
+            print(f"after:  {symbol_id!r}, {symbol}, {addend = !r}")
+
+    def add_elf(self, elf: ELFFile) -> None:
+        file_idx = 0
+
+        for idx, section in enumerate(elf.iter_sections()):
+            section_id = self._section_id(section)
+            if section_id is not None:
+                self._add_elf_section(file_idx, section_id, elf, idx)
+
+        for idx, section in enumerate(elf.iter_sections()):
+            section_id = self._section_id(section)
+            if section_id is not None:
+                self._add_elf_relocs(file_idx, section_id, elf, idx)
 
 
 if __name__ == "__main__":
@@ -137,4 +266,7 @@ if __name__ == "__main__":
     linker = Linker()
     with open(filename, "rb") as f:
         linker.add_elf(ELFFile(f))
-    print(linker.functions)
+
+    import pprint
+
+    pprint.pp(linker.program)

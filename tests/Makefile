@@ -20,7 +20,7 @@ LDFLAGS :=
 BPF_CFLAGS   := -target bpfel -fno-builtin
 BPF_LLCFLAGS := -march=bpfel -mcpu=v3
 
-TESTS := add hello hello-funcptr ret-if fib fib-rec printf
+TESTS := add hello hello-funcptr hello-rodata ret-if fib fib-rec printf
 
 .SUFFIXES:
 .SECONDARY:
