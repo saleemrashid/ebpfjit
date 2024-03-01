@@ -40,6 +40,7 @@ class Symbol(NamedTuple):
 
 class Linker(object):
     def __init__(self) -> None:
+        self.file_idx = 0
         self.sections: dict[SectionId, bytearray] = {
             section_id: bytearray() for section_id in SectionId
         }
@@ -97,7 +98,7 @@ class Linker(object):
         if sh_flags & SH_FLAGS.SHF_EXECINSTR:
             return SectionId.Text
         elif sh_flags & SH_FLAGS.SHF_WRITE:
-            raise NotImplementedError(".data section")
+            raise NotImplementedError(f".data section ({section.name!r})")
         else:
             return SectionId.Rodata
 
@@ -123,6 +124,7 @@ class Linker(object):
         elif st_type in (
             "STT_NOTYPE",
             "STT_FUNC",
+            "STT_OBJECT",
         ):
             name = symbol.name
             section = False
@@ -163,7 +165,7 @@ class Linker(object):
                 addrs[start] = symbol_id
 
         self.symbols[SymbolId(elf_section.name, True, file_idx)] = Symbol(
-            section_id, addr_offset, len(data)
+            section_id, addr_offset, addr_offset + len(data)
         )
 
     def _add_elf_relocs(
@@ -245,7 +247,8 @@ class Linker(object):
             print(f"after:  {symbol_id!r}, {symbol}, {addend = !r}")
 
     def add_elf(self, elf: ELFFile) -> None:
-        file_idx = 0
+        file_idx = self.file_idx
+        self.file_idx += 1
 
         for idx, section in enumerate(elf.iter_sections()):
             section_id = self._section_id(section)

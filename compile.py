@@ -289,12 +289,14 @@ class Compiler(object):
 if __name__ == "__main__":
     import sys
 
-    (filename,) = sys.argv[1:]
+    filenames = sys.argv[1:]
 
     linker = Linker()
-    with open(filename, "rb") as f:
-        elf = ELFFile(f)
-        linker.add_elf(elf)
+
+    for filename in filenames:
+        with open(filename, "rb") as f:
+            elf = ELFFile(f)
+            linker.add_elf(elf)
 
     compiler = Compiler()
 
@@ -304,15 +306,16 @@ if __name__ == "__main__":
     # TODO(saleem): this is hacky, but I'm prototyping the compiler API so it doesn't matter
 
     for symbol_id, symbol in linker.symbols.items():
-        if symbol.section == SectionId.Text:
+        if symbol.section == SectionId.Text and not symbol_id.section:
             compiler.declare_function(symbol_id.name, symbol.start // 8)
         elif symbol.section == SectionId.Rodata:
+            print(symbol_id, symbol, file=sys.stderr)
             compiler.add_rodata(
                 symbol_id.name,
                 linker.sections[SectionId.Rodata][symbol.start : symbol.end],
             )
     for symbol_id, symbol in linker.symbols.items():
-        if symbol.section == SectionId.Text:
+        if symbol.section == SectionId.Text and not symbol_id.section:
             compiler.compile_function(
                 symbol_id.name, symbol.start // 8, symbol.end // 8, linker.program
             )
