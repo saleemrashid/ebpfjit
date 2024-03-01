@@ -39,7 +39,7 @@ class Compiler(object):
         self.symbols[name] = ir.Function(self.module, type, name)
 
     def add_rodata(self, name: str, data: bytes) -> None:
-        value = ir.Constant.literal_array([I8(x) for x in data])
+        value = ir.Constant(ir.ArrayType(I8, len(data)), data)
         variable = ir.GlobalVariable(self.module, value.type, name)
         variable.initializer = value
         self.symbols[name] = variable

@@ -233,19 +233,6 @@ class Linker(object):
 
         self.program.extend(program)
 
-        if False:
-            addend = int.from_bytes(
-                data[reloc["r_offset"] + 4 :][:4], "little", signed=True
-            )
-
-            print(f"before: {symbol_id!r}, {addend = !r}")
-
-            if addend:
-                base_symbol = self.symbols[symbol_id]
-                symbol_id = self.addrs[base_symbol.section][base_symbol.start + addend]
-
-            print(f"after:  {symbol_id!r}, {symbol}, {addend = !r}")
-
     def add_elf(self, elf: ELFFile) -> None:
         file_idx = self.file_idx
         self.file_idx += 1
