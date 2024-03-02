@@ -38,7 +38,7 @@ class Compiler(object):
         # TODO(saleem): check conflicts
         self.symbols[name] = ir.Function(self.module, type, name)
 
-    def add_rodata(self, name: str, data: bytes) -> None:
+    def add_data(self, name: str, data: bytes) -> None:
         value = ir.Constant(ir.ArrayType(I8, len(data)), data)
         variable = ir.GlobalVariable(self.module, value.type, name)
         variable.initializer = value
@@ -70,6 +70,10 @@ class Compiler(object):
             if ins is None:
                 continue
             self._compile(pc, ins)
+
+        # TODO(saleem): duplication from _compile
+        if not self.builder.block.is_terminated:
+            self.builder.branch(self.exit_block)
 
         # Epilogue
         self.builder.position_at_end(self.exit_block)
@@ -150,25 +154,69 @@ class Compiler(object):
                 src = self.load_src(ins)
                 dst = self.load_reg(dst_reg, ins.is_64)
 
+                match (offset, opcode.code):
+                    case (0, _):
+                        sdiv = False
+                    case (1, bpf.AluCode.DIV | bpf.AluCode.MOD):
+                        sdiv = True
+                    case _:
+                        raise ValueError(
+                            f"invalid offset {offset} for {opcode.code.name}"
+                        )
+
                 match opcode.code:
                     case bpf.AluCode.ADD:
                         # dst += src
                         dst = self.builder.add(dst, src)
+                    case bpf.AluCode.SUB:
+                        # dst -= src
+                        dst = self.builder.sub(dst, src)
                     case bpf.AluCode.MUL:
                         # dst *= src
                         dst = self.builder.mul(dst, src)
-                    case bpf.AluCode.MOV:
-                        dst = src
+                    case bpf.AluCode.DIV:
+                        if sdiv:
+                            # result = (dst s/ src)
+                            result = self.builder.sdiv(dst, src)
+                        else:
+                            # result = (dst / src)
+                            result = self.builder.udiv(dst, src)
+                        # dst = (src != 0) ? result : 0
+                        dst = self.builder.select(
+                            self.builder.icmp_unsigned("!=", src, zero), result, zero
+                        )
+                    case bpf.AluCode.OR:
+                        # dst |= src
+                        dst = self.builder.or_(dst, src)
+                    case bpf.AluCode.AND:
+                        # dst &= src
+                        dst = self.builder.and_(dst, src)
                     case bpf.AluCode.LSH:
                         # dst <<= (src & mask)
                         dst = self.builder.shl(dst, self.builder.and_(src, mask))
+                    case bpf.AluCode.RSH:
+                        # dst >>= (src & mask)
+                        dst = self.builder.lshr(dst, self.builder.and_(src, mask))
+                    case bpf.AluCode.NEG:
+                        # dst = -dst
+                        dst = self.builder.neg(dst)
                     case bpf.AluCode.MOD:
-                        # dst = (src != 0) ? (dst % src) : dst
+                        if sdiv:
+                            # result = (dst s% src)
+                            result = self.builder.srem(dst, src)
+                        else:
+                            # result = (dst % src)
+                            result = self.builder.urem(dst, src)
+                        # dst = (src != 0) ? result : dst
                         dst = self.builder.select(
-                            self.builder.icmp_unsigned("!=", src, zero),
-                            self.builder.urem(dst, src),
-                            dst,
+                            self.builder.icmp_unsigned("!=", src, zero), result, dst
                         )
+                    case bpf.AluCode.XOR:
+                        # dst ^= src
+                        dst = self.builder.xor(dst, src)
+                    case bpf.AluCode.MOV:
+                        # dst = src
+                        dst = src
                     case bpf.AluCode.ARSH:
                         # dst s>>= (src & mask)
                         dst = self.builder.ashr(dst, self.builder.and_(src, mask))
@@ -201,12 +249,23 @@ class Compiler(object):
                         src = self.load_src(ins)
                         dst = self.load_reg(dst_reg, ins.is_64)
                         match code:
+                            case bpf.JumpCode.JA:
+                                cond = None
                             case bpf.JumpCode.JEQ:
                                 # PC += offset if dst == src
                                 cond = self.builder.icmp_unsigned("==", dst, src)
                             case bpf.JumpCode.JGT:
                                 # PC += offset if dst > src (unsigned)
                                 cond = self.builder.icmp_unsigned(">", dst, src)
+                            case bpf.JumpCode.JGE:
+                                # PC += offset if dst > src (unsigned)
+                                cond = self.builder.icmp_unsigned(">=", dst, src)
+                            case bpf.JumpCode.JNE:
+                                # PC += offset if dst != src
+                                cond = self.builder.icmp_unsigned("!=", dst, src)
+                            case bpf.JumpCode.JSGT:
+                                # PC += offset if dst > src (signed)
+                                cond = self.builder.icmp_signed(">", dst, src)
                             case bpf.JumpCode.JLT:
                                 # PC += offset if dst < src (unsigned)
                                 cond = self.builder.icmp_unsigned("<", dst, src)
@@ -302,17 +361,30 @@ if __name__ == "__main__":
 
     # TODO(saleem): implement helper functions
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
+    compiler.extern_function("malloc", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function("free", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function(
+        "write",
+        ir.FunctionType(
+            I64,
+            (
+                I64,
+                I64,
+                I64,
+            ),
+        ),
+    )
 
     # TODO(saleem): this is hacky, but I'm prototyping the compiler API so it doesn't matter
 
     for symbol_id, symbol in linker.symbols.items():
-        if symbol.section == SectionId.Text and not symbol_id.section:
-            compiler.declare_function(symbol_id.name, symbol.start // 8)
-        elif symbol.section == SectionId.Rodata:
-            print(symbol_id, symbol, file=sys.stderr)
-            compiler.add_rodata(
+        if symbol.section == SectionId.Text:
+            if not symbol_id.section:
+                compiler.declare_function(symbol_id.name, symbol.start // 8)
+        else:
+            compiler.add_data(
                 symbol_id.name,
-                linker.sections[SectionId.Rodata][symbol.start : symbol.end],
+                linker.sections[symbol.section][symbol.start : symbol.end],
             )
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text and not symbol_id.section:

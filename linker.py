@@ -98,7 +98,7 @@ class Linker(object):
         if sh_flags & SH_FLAGS.SHF_EXECINSTR:
             return SectionId.Text
         elif sh_flags & SH_FLAGS.SHF_WRITE:
-            raise NotImplementedError(f".data section ({section.name!r})")
+            return SectionId.Data
         else:
             return SectionId.Rodata
 
@@ -111,7 +111,8 @@ class Linker(object):
 
         if st_bind == "STB_LOCAL":
             local = True
-        elif st_bind == "STB_GLOBAL":
+        elif st_bind in ("STB_GLOBAL", "STB_WEAK"):
+            # TODO(saleem): handle weak symbols correctly
             local = False
         else:
             raise NotImplementedError(f"symbol bind {st_bind!r}")
@@ -140,7 +141,11 @@ class Linker(object):
         self, file_idx: int, section_id: SectionId, elf: ELFFile, idx: int
     ) -> None:
         elf_section = elf.get_section(idx)
-        data = elf_section.data()
+
+        if elf_section["sh_type"] == "SHT_PROGBITS":
+            data = elf_section.data()
+        else:
+            data = bytes(elf_section["sh_size"])
 
         raw_section = self.sections[section_id]
         addrs = self.addrs[section_id]
@@ -214,6 +219,16 @@ class Linker(object):
                         or ins.opcode.code != bpf.JumpCode.CALL
                     ):
                         raise ValueError(f"{reloc_type.name} requires BPF_CALL")
+
+                    try:
+                        base_symbol = self.symbols[symbol_id]
+                    except KeyError:
+                        pass
+                    else:
+                        if base_symbol.section != SectionId.Text:
+                            raise ValueError("TODO(saleem): must be .text?")
+                        # resolve from section name to actual func
+                        symbol_id = func_addrs[base_symbol.start]
 
                     program[pc] = ins._replace(symbol=symbol_id)
 
