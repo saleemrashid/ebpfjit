@@ -379,15 +379,14 @@ if __name__ == "__main__":
 
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
-            if not symbol_id.section:
-                compiler.declare_function(symbol_id.name, symbol.start // 8)
+            compiler.declare_function(symbol_id.name, symbol.start // 8)
         else:
             compiler.add_data(
                 symbol_id.name,
                 linker.sections[symbol.section][symbol.start : symbol.end],
             )
     for symbol_id, symbol in linker.symbols.items():
-        if symbol.section == SectionId.Text and not symbol_id.section:
+        if symbol.section == SectionId.Text:
             compiler.compile_function(
                 symbol_id.name, symbol.start // 8, symbol.end // 8, linker.program
             )

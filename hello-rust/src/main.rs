@@ -42,8 +42,9 @@ static STDOUT: FdWriter = FdWriter(1);
 
 #[no_mangle]
 extern "C" fn main() {
-    /*
-    let s = format!("hello\0");*/
+    let s = format!("hello");
+    let _ = STDOUT.clone().write_str(&s);
+    let _ = STDOUT.clone().write_char('\n');
 
     /*
     unsafe {
@@ -67,6 +68,7 @@ fn try_main() -> Result<(), httparse::Error> {
 
     let s = req.path.unwrap();
     let _ = STDOUT.clone().write_str(s);
+    let _ = STDOUT.clone().write_char('\n');
 
     /*
     unsafe {

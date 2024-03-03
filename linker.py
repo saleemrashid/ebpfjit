@@ -1,5 +1,5 @@
 import enum
-from typing import Iterator, NamedTuple, Optional
+from typing import Iterator, NamedTuple, Optional, Self
 
 from bitstring import ConstBitStream
 from elftools.elf.constants import SH_FLAGS
@@ -31,6 +31,10 @@ class SymbolId(NamedTuple):
     section: bool
     file_idx: Optional[int] = None
 
+    @classmethod
+    def for_section(cls, name: str, file_idx: int) -> Self:
+        return cls(name, True, file_idx)
+
 
 class Symbol(NamedTuple):
     section: SectionId
@@ -44,11 +48,40 @@ class Linker(object):
         self.sections: dict[SectionId, bytearray] = {
             section_id: bytearray() for section_id in SectionId
         }
-        self.addrs: dict[SectionId, dict[int, SymbolId]] = {
+
+        self.symbols: dict[SymbolId, Symbol] = {}
+        self.symbol_aliases: dict[SymbolId, SymbolId] = {}
+        self.symbol_addrs: dict[SectionId, dict[int, SymbolId]] = {
             section_id: {} for section_id in SectionId
         }
-        self.symbols: dict[SymbolId, Symbol] = {}
+
         self.program: list[bpf.Instruction] = []
+
+    def _add_symbol(self, symbol_id: SymbolId, symbol: Symbol):
+        section_addrs = self.symbol_addrs[symbol.section]
+
+        if existing := section_addrs.get(symbol.start):
+            # FIXME(saleem): no two symbols should have the same address? but __rdl_oom and memmove did
+            self.symbol_aliases[symbol_id] = existing
+        else:
+            self.symbols[symbol_id] = symbol
+            self.symbol_aliases[symbol_id] = symbol_id
+            section_addrs[symbol.start] = symbol_id
+
+    def _resolve_symbol(self, symbol_id: SymbolId, offset: int) -> tuple[SymbolId, int]:
+        # TODO(saleem): handle extern better?
+        if symbol_id not in self.symbol_aliases:
+            return symbol_id, offset
+
+        symbol = self.symbols.get(self.symbol_aliases[symbol_id])
+        section_addrs = self.symbol_addrs[symbol.section]
+
+        if resolved := section_addrs.get(symbol.start + offset):
+            return resolved, 0
+        elif symbol.section == SectionId.Text:
+            raise ValueError(f"cannot offset symbol {symbol_id!r} in .text section")
+        else:
+            return section_addrs[symbol.start], offset
 
     @staticmethod
     def _iter_symbols(elf: ELFFile, idx: int) -> Iterator[ELFSymbol]:
@@ -148,29 +181,22 @@ class Linker(object):
             data = bytes(elf_section["sh_size"])
 
         raw_section = self.sections[section_id]
-        addrs = self.addrs[section_id]
 
-        addr_offset = len(raw_section)
+        base_addr = len(raw_section)
         raw_section.extend(data)
 
         for symbol in self._iter_symbols(elf, idx):
             symbol_id = self._symbol_id(file_idx, elf, symbol)
-            if symbol_id is None:
+            if symbol_id is None or symbol_id.section:
                 continue
 
-            value = symbol["st_value"]
-            size = symbol["st_size"]
+            start = base_addr + symbol["st_value"]
+            end = start + symbol["st_size"]
+            self._add_symbol(symbol_id, Symbol(section_id, start, end))
 
-            start = addr_offset + value
-            end = start + size
-
-            # TODO(saleem): check uniqueness
-            self.symbols[symbol_id] = Symbol(section_id, start, end)
-            if not symbol_id.section:
-                addrs[start] = symbol_id
-
-        self.symbols[SymbolId(elf_section.name, True, file_idx)] = Symbol(
-            section_id, addr_offset, addr_offset + len(data)
+        self._add_symbol(
+            SymbolId.for_section(elf_section.name, file_idx),
+            Symbol(section_id, base_addr, base_addr + len(data)),
         )
 
     def _add_elf_relocs(
@@ -181,8 +207,8 @@ class Linker(object):
 
         elf_section = elf.get_section(idx)
 
-        func_addrs = self.addrs[SectionId.Text]
-        addr_offset = self.symbols[SymbolId(elf_section.name, True, file_idx)].start
+        func_addrs = self.symbol_addrs[SectionId.Text]
+        base_symbol_id = SymbolId.for_section(elf_section.name, file_idx)
 
         program = disasm.disasm(ConstBitStream(bytes=elf_section.data()))
 
@@ -202,16 +228,12 @@ class Linker(object):
                     if not isinstance(ins, bpf.LoadImm64):
                         raise ValueError(f"{reloc_type.name} requires BPF_LD imm64")
 
-                    try:
-                        base_symbol = self.symbols[symbol_id]
-                    except KeyError:
-                        pass
-                    else:
-                        if base_symbol.section == SectionId.Text:
-                            symbol_id = func_addrs[base_symbol.start + ins.imm64]
-                            ins = ins._replace(imm32=0, next_imm=0)
-
-                    program[pc] = ins._replace(addr=symbol_id)
+                    resolved, offset = self._resolve_symbol(symbol_id, ins.imm64)
+                    program[pc] = ins._replace(
+                        imm32=(offset & 0xFFFFFFFF),
+                        next_imm=(offset >> 32),
+                        addr=resolved,
+                    )
 
                 case RelocationType.R_BPF_64_32:
                     if (
@@ -220,17 +242,11 @@ class Linker(object):
                     ):
                         raise ValueError(f"{reloc_type.name} requires BPF_CALL")
 
-                    try:
-                        base_symbol = self.symbols[symbol_id]
-                    except KeyError:
-                        pass
-                    else:
-                        if base_symbol.section != SectionId.Text:
-                            raise ValueError("TODO(saleem): must be .text?")
-                        # resolve from section name to actual func
-                        symbol_id = func_addrs[base_symbol.start]
+                    # TODO(saleem): should there be an offset?
+                    resolved, _ = self._resolve_symbol(symbol_id, 0)
+                    # assert self.symbols[resolved].section == SectionId.Text
 
-                    program[pc] = ins._replace(symbol=symbol_id)
+                    program[pc] = ins._replace(symbol=resolved)
 
                 case _:
                     raise NotImplementedError(f"{reloc_type.name} not supported")
@@ -243,8 +259,10 @@ class Linker(object):
                     if ins.symbol is not None:
                         continue
 
-                    addr = addr_offset + (pc + 1 + ins.imm) * BPF_INSTRUCTION_SIZE
-                    program[pc] = ins._replace(symbol=func_addrs[addr])
+                    resolved, _ = self._resolve_symbol(
+                        base_symbol_id, (pc + 1 + ins.imm) * BPF_INSTRUCTION_SIZE
+                    )
+                    program[pc] = ins._replace(symbol=resolved)
 
         self.program.extend(program)
 
