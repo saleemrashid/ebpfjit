@@ -1,5 +1,5 @@
 import enum
-from typing import Iterator, NamedTuple, Optional, Self
+from typing import Iterator, NamedTuple, Optional, Self, Union
 
 from bitstring import ConstBitStream
 from elftools.elf.constants import SH_FLAGS
@@ -17,6 +17,8 @@ BPF_INSTRUCTION_SIZE = 8
 
 class RelocationType(enum.IntEnum):
     R_BPF_64_64 = 1
+    R_BPF_64_ABS64 = 2
+    R_BPF_64_ABS32 = 3
     R_BPF_64_32 = 10
 
 
@@ -44,8 +46,8 @@ class Symbol(NamedTuple):
 
 class Linker(object):
     def __init__(self) -> None:
-        self.file_idx = 0
-        self.sections: dict[SectionId, bytearray] = {
+        self._file_idx = 0
+        self.raw_sections: dict[SectionId, bytearray] = {
             section_id: bytearray() for section_id in SectionId
         }
 
@@ -54,12 +56,17 @@ class Linker(object):
         self.symbol_addrs: dict[SectionId, dict[int, SymbolId]] = {
             section_id: {} for section_id in SectionId
         }
+        self.symbol_values: dict[
+            SymbolId, list[Union[bytes, tuple[SymbolId, int]]]
+        ] = {}
 
         self.program: list[bpf.Instruction] = []
 
     def _add_symbol(self, symbol_id: SymbolId, symbol: Symbol):
-        section_addrs = self.symbol_addrs[symbol.section]
+        if symbol_id in self.symbol_aliases:
+            raise ValueError(f"duplicate symbol {symbol_id!r}")
 
+        section_addrs = self.symbol_addrs[symbol.section]
         if existing := section_addrs.get(symbol.start):
             # FIXME(saleem): no two symbols should have the same address? but __rdl_oom and memmove did
             self.symbol_aliases[symbol_id] = existing
@@ -94,18 +101,6 @@ class Linker(object):
                     continue
 
                 yield symbol
-
-    @staticmethod
-    def _get_symtab(elf: ELFFile) -> SymbolTableSection:
-        sections = [
-            section
-            for section in elf.iter_sections()
-            if isinstance(section, SymbolTableSection)
-        ]
-        if len(sections) != 1:
-            raise ValueError("expected one symbol table")
-
-        return sections[0]
 
     @staticmethod
     def _iter_relocations(
@@ -180,7 +175,7 @@ class Linker(object):
         else:
             data = bytes(elf_section["sh_size"])
 
-        raw_section = self.sections[section_id]
+        raw_section = self.raw_sections[section_id]
 
         base_addr = len(raw_section)
         raw_section.extend(data)
@@ -202,15 +197,31 @@ class Linker(object):
     def _add_elf_relocs(
         self, file_idx: int, section_id: SectionId, elf: ELFFile, idx: int
     ) -> None:
-        if section_id != SectionId.Text:
-            return
-
         elf_section = elf.get_section(idx)
 
-        func_addrs = self.symbol_addrs[SectionId.Text]
-        base_symbol_id = SymbolId.for_section(elf_section.name, file_idx)
+        # TODO(saleem): there must be a cleaner way to do this
+        start = self.symbols[
+            self.symbol_aliases[SymbolId.for_section(elf_section.name, file_idx)]
+        ].start
+        end = start + elf_section["sh_size"]
+        # we do this rather than elf_section.data() for SHT_NOBITS (.bss)
+        raw_data = self.raw_sections[section_id][start:end]
 
-        program = disasm.disasm(ConstBitStream(bytes=elf_section.data()))
+        if section_id == SectionId.Text:
+            self._add_elf_relocs_text(file_idx, elf, idx, start, raw_data)
+        else:
+            self._add_elf_relocs_data(file_idx, elf, idx, section_id, start, raw_data)
+
+    def _add_elf_relocs_text(
+        self,
+        file_idx: int,
+        elf: ELFFile,
+        idx: int,
+        base_addr: int,
+        raw_data: bytes,
+    ) -> None:
+        section_addrs = self.symbol_addrs[SectionId.Text]
+        program = disasm.disasm(ConstBitStream(bytes=raw_data))
 
         for symbol_table, reloc in self._iter_relocations(elf, idx):
             elf_symbol = symbol_table.get_symbol(reloc["r_info_sym"])
@@ -259,16 +270,87 @@ class Linker(object):
                     if ins.symbol is not None:
                         continue
 
-                    resolved, _ = self._resolve_symbol(
-                        base_symbol_id, (pc + 1 + ins.imm) * BPF_INSTRUCTION_SIZE
-                    )
+                    offset = (pc + 1 + ins.imm) * BPF_INSTRUCTION_SIZE
+                    resolved = section_addrs[base_addr + offset]
+
                     program[pc] = ins._replace(symbol=resolved)
 
         self.program.extend(program)
 
+    def _add_elf_relocs_data(
+        self,
+        file_idx: int,
+        elf: ELFFile,
+        idx: int,
+        section_id: SectionId,
+        section_start: int,
+        raw_data: bytes,
+    ) -> None:
+        section_end = section_start + len(raw_data)
+        relocs = {}
+
+        for symbol_table, reloc in self._iter_relocations(elf, idx):
+            elf_symbol = symbol_table.get_symbol(reloc["r_info_sym"])
+            symbol_id = self._symbol_id(file_idx, elf, elf_symbol)
+
+            if symbol_id is None:
+                raise ValueError(f"invalid relocation for symbol {elf_symbol.name!r}")
+
+            reloc_type = RelocationType(reloc["r_info_type"])
+            reloc_offset = reloc["r_offset"]
+
+            match reloc_type:
+                case RelocationType.R_BPF_64_ABS64:
+                    if reloc_offset % 8 != 0:
+                        raise ValueError(
+                            f"misaligned 64-bit relocation at offset {reloc_offset}"
+                        )
+
+                    # FIXME(saleem): hardcoded endian
+                    offset = int.from_bytes(
+                        raw_data[reloc_offset : reloc_offset + 8], "little", signed=True
+                    )
+                    resolved, offset = self._resolve_symbol(symbol_id, offset)
+
+                    if reloc_offset in relocs:
+                        raise NotImplementedError(
+                            f"multiple relocations at offset {reloc_offset}"
+                        )
+                    relocs[reloc_offset] = (resolved, offset)
+
+                case _:
+                    raise NotImplementedError(f"{reloc_type.name} not supported")
+
+        # TODO(saleem): some kind of navigable dict?
+        for addr, symbol_id in self.symbol_addrs[section_id].items():
+            if not section_start <= addr < section_end:
+                continue
+
+            symbol = self.symbols[symbol_id]
+            start = symbol.start - section_start
+            end = symbol.end - section_start
+
+            reloc_offsets = [
+                reloc_offset
+                for reloc_offset in sorted(relocs.keys())
+                if start <= reloc_offset < end
+            ]
+
+            struct: list[Union[bytes, tuple[SymbolId, int]]] = []
+            i = start
+            for reloc_offset in reloc_offsets:
+                if i < reloc_offset:
+                    struct.append(raw_data[i:reloc_offset])
+                struct.append(relocs[reloc_offset])
+                i = reloc_offset + 8
+            if i < end:
+                struct.append(raw_data[i:end])
+
+            self.symbol_values[symbol_id] = struct
+
     def add_elf(self, elf: ELFFile) -> None:
-        file_idx = self.file_idx
-        self.file_idx += 1
+        file_idx = self._file_idx
+        self._file_idx += 1
 
         for idx, section in enumerate(elf.iter_sections()):
             section_id = self._section_id(section)

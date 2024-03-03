@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 from typing import Iterator, Union
 
+from collections.abc import Buffer
 from elftools.elf.elffile import ELFFile
 from llvmlite import ir  # type: ignore
 
 import bpf
-from linker import Linker, SectionId
+from linker import Linker, SectionId, SymbolId
 
 I8 = ir.IntType(8)
 I16 = ir.IntType(16)
@@ -38,11 +39,36 @@ class Compiler(object):
         # TODO(saleem): check conflicts
         self.symbols[name] = ir.Function(self.module, type, name)
 
-    def add_data(self, name: str, data: bytes) -> None:
-        value = ir.Constant(ir.ArrayType(I8, len(data)), data)
-        variable = ir.GlobalVariable(self.module, value.type, name)
-        variable.initializer = value
-        self.symbols[name] = variable
+    def declare_data(
+        self, name: str, elements: list[Union[bytes, tuple[SymbolId, int]]]
+    ) -> None:
+        typs = []
+        for item in elements:
+            match item:
+                case Buffer():
+                    typs.append(ir.ArrayType(I8, len(item)))
+                case (symbol_id, offset):
+                    typs.append(I64)
+
+        self.symbols[name] = ir.GlobalVariable(
+            self.module, ir.LiteralStructType(typs), name
+        )
+
+    def define_data(
+        self, name: str, elements: list[Union[bytes, tuple[SymbolId, int]]]
+    ) -> None:
+        elems = []
+        for item in elements:
+            match item:
+                case Buffer():
+                    elems.append(ir.Constant(ir.ArrayType(I8, len(item)), item))
+                case (symbol_id, offset):
+                    elems.append(
+                        self.symbols[symbol_id.name].ptrtoint(I64).add(I64(offset))
+                    )
+
+        value = self.symbols[name]
+        value.initializer = ir.Constant(value.value_type, elems)
 
     def declare_function(self, name: str, pc: int) -> None:
         self.extern_function(name, BPF_FUNC_TYPE)
@@ -381,14 +407,16 @@ if __name__ == "__main__":
         if symbol.section == SectionId.Text:
             compiler.declare_function(symbol_id.name, symbol.start // 8)
         else:
-            compiler.add_data(
+            compiler.declare_data(
                 symbol_id.name,
-                linker.sections[symbol.section][symbol.start : symbol.end],
+                linker.symbol_values[symbol_id],
             )
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
             compiler.compile_function(
                 symbol_id.name, symbol.start // 8, symbol.end // 8, linker.program
             )
+        else:
+            compiler.define_data(symbol_id.name, linker.symbol_values[symbol_id])
 
     print(compiler.module)
