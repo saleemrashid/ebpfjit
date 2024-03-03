@@ -6,6 +6,7 @@ from elftools.elf.elffile import ELFFile
 from llvmlite import ir  # type: ignore
 
 import bpf
+import itertools
 from linker import Linker, SectionId, SymbolId
 
 I8 = ir.IntType(8)
@@ -29,6 +30,7 @@ class Compiler(object):
         self.module = ir.Module()
         self.symbols: dict[str, ir.Value] = {}
         self.blocks: dict[int, ir.Block] = {}
+        self.unvisited_blocks: set[int] = set()
 
     @staticmethod
     def _args_regs() -> Iterator[bpf.Reg]:
@@ -80,7 +82,7 @@ class Compiler(object):
 
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
-        (stack_begin, stack_end) = self._alloc_stack(self.builder, 512)
+        (stack_begin, stack_end) = self._alloc_stack(self.builder, 10000)
         self.registers = self._alloc_reg(self.builder)
         for reg, arg in zip(self._args_regs(), func.args):
             self.store_reg(reg, arg)
@@ -90,16 +92,43 @@ class Compiler(object):
         self._create_blocks(text, start, end)
         self.exit_block = func.append_basic_block("exit")
 
-        # builder should point to entry, so _compile will branch to the first block
         for pc in range(start, end):
+            if block := self.blocks.get(pc):
+                assert len(block.instructions) == 0
+                self.unvisited_blocks.remove(pc)
+
+                if not self.builder.block.is_terminated:
+                    self.builder.branch(block)
+                self.builder.position_at_end(block)
+
             ins = text[pc]
             if ins is None:
                 continue
             self._compile(pc, ins)
 
-        # TODO(saleem): duplication from _compile
         if not self.builder.block.is_terminated:
             self.builder.branch(self.exit_block)
+
+        # Jumps can cross function boundaries, but LLVM IR doesn't support this. Below we
+        # iterate over the reachable basic blocks that aren't part of this function, and
+        # compile them into the function as if they were.
+        while self.unvisited_blocks:
+            pc = self.unvisited_blocks.pop()
+            block = self.blocks[pc]
+            assert len(block.instructions) == 0
+
+            self.builder.position_at_end(block)
+            for pc in itertools.count(pc):
+                ins = text[pc]
+                if ins is None:
+                    continue
+                self._compile(pc, ins)
+
+                if block.is_terminated:
+                    break
+                elif next_block := self.blocks.get(pc + 1):
+                    self.builder.branch(next_block)
+                    break
 
         # Epilogue
         self.builder.position_at_end(self.exit_block)
@@ -121,9 +150,14 @@ class Compiler(object):
             register: builder.alloca(I64, name=register.name) for register in bpf.Reg
         }
 
-    def _create_block(self, pc: int) -> None:
-        if pc not in self.blocks:
-            self.blocks[pc] = self.builder.append_basic_block(f"L{pc}")
+    def _create_block(self, pc: int) -> ir.Block:
+        if block := self.blocks.get(pc):
+            return block
+        else:
+            block = self.builder.append_basic_block(f"L{pc}")
+            self.blocks[pc] = block
+            self.unvisited_blocks.add(pc)
+            return block
 
     def _create_blocks(self, text: list[bpf.Instruction], start: int, end: int) -> None:
         self.blocks.clear()
@@ -165,12 +199,6 @@ class Compiler(object):
         self.builder.store(value, self.registers[reg])
 
     def _compile(self, pc: int, ins: bpf.Instruction) -> None:
-        if block := self.blocks.get(pc):
-            # XXX(saleem): we should do this in the block analysis phase?
-            if not self.builder.block.is_terminated:
-                self.builder.branch(block)
-            self.builder.position_at_end(block)
-
         self.builder.comment(f"{pc=}, {ins!r}")
         match ins:
             case bpf.Alu(opcode, _, dst_reg, offset, imm):
@@ -284,7 +312,7 @@ class Compiler(object):
                                 # PC += offset if dst > src (unsigned)
                                 cond = self.builder.icmp_unsigned(">", dst, src)
                             case bpf.JumpCode.JGE:
-                                # PC += offset if dst > src (unsigned)
+                                # PC += offset if dst >= src (unsigned)
                                 cond = self.builder.icmp_unsigned(">=", dst, src)
                             case bpf.JumpCode.JNE:
                                 # PC += offset if dst != src
@@ -295,6 +323,9 @@ class Compiler(object):
                             case bpf.JumpCode.JLT:
                                 # PC += offset if dst < src (unsigned)
                                 cond = self.builder.icmp_unsigned("<", dst, src)
+                            case bpf.JumpCode.JLE:
+                                # PC += offset if dst <= src (unsigned)
+                                cond = self.builder.icmp_unsigned("<=", dst, src)
                             case bpf.JumpCode.JSLT:
                                 # PC += offset if dst < src (signed)
                                 cond = self.builder.icmp_signed("<", dst, src)
@@ -307,12 +338,12 @@ class Compiler(object):
                         target = next_pc + ins.jump_offset
 
                         if cond is None:
-                            self.builder.branch(self.blocks[target])
+                            self.builder.branch(self._create_block(target))
                         else:
                             self.builder.cbranch(
                                 cond,
-                                self.blocks[target],
-                                self.blocks[next_pc],
+                                self._create_block(target),
+                                self._create_block(next_pc),
                             )
 
             case bpf.LoadImm64(opcode, src, dst_reg, offset, _, _, addr):
@@ -389,6 +420,7 @@ if __name__ == "__main__":
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
     compiler.extern_function("malloc", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("free", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function("ctlz", ir.FunctionType(I64, (I64,)))
     compiler.extern_function(
         "write",
         ir.FunctionType(

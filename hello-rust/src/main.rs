@@ -40,22 +40,24 @@ impl Write for FdWriter {
 
 static STDOUT: FdWriter = FdWriter(1);
 
-#[no_mangle]
-extern "C" fn main() {
-    let s = format!("hello");
-    let _ = writeln!(STDOUT.clone(), "s = {s}");
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        let _ = write!(STDOUT.clone(), $($arg)*);
+    }};
+}
 
-    /*
-    unsafe {
-        printf("s = %p\n\0".as_ptr(), s.as_ptr());
-    }*/
-    if let Err(e) = try_main() {
-        /*
-        let s = format!("{:?}\0", e);
-        unsafe {
-            my_puts(s.as_ptr(), s.len());
-        }*/
-    }
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(STDOUT.clone(), $($arg)*);
+    }};
+}
+
+#[no_mangle]
+extern "C" fn main() -> i32 {
+    let s = format!("hello");
+    println!("s = {s}");
+    println!("{:?}", try_main());
+    0
 }
 
 fn try_main() -> Result<(), httparse::Error> {
@@ -65,9 +67,20 @@ fn try_main() -> Result<(), httparse::Error> {
     let buf = b"GET /index.html HTTP/1.1\r\nHost: example.domain\r\n\r\n";
     let _ = req.parse(buf)?.unwrap();
 
-    let s = req.path.unwrap();
-    let _ = STDOUT.clone().write_str(s);
-    let _ = STDOUT.clone().write_char('\n');
+    println!(
+        "method = {:?}, path = {:?}, version = {:?}",
+        req.method,
+        req.path.unwrap(),
+        req.version.unwrap()
+    );
+
+    req.headers.iter().for_each(|&header| {
+        println!(
+            "name = {:?}, value = {:?}",
+            header.name,
+            core::str::from_utf8(header.value).unwrap()
+        )
+    });
 
     /*
     unsafe {
