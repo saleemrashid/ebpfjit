@@ -119,6 +119,12 @@ class Compiler(object):
 
             self.builder.position_at_end(block)
             for pc in itertools.count(pc):
+                # FIXME(saleem): LLVM can omit the epilogue for noreturn calls.
+                # How can we best handle that, without knowing if a call is noreturn?
+                if pc == len(text):
+                    self.builder.branch(self.exit_block)
+                    break
+
                 ins = text[pc]
                 if ins is None:
                     continue
