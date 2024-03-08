@@ -21,6 +21,7 @@ BPF_SIZE_TO_TYPE = {
     bpf.Size.DW: I64,
 }
 
+BPF_STACK_SIZE = 131072
 BPF_ARGS = 5
 BPF_FUNC_TYPE = ir.FunctionType(I64, (I64,) * BPF_ARGS)
 
@@ -82,7 +83,7 @@ class Compiler(object):
 
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
-        (stack_begin, stack_end) = self._alloc_stack(self.builder, 10000)
+        (stack_begin, stack_end) = self._alloc_stack(self.builder, BPF_STACK_SIZE)
         self.registers = self._alloc_reg(self.builder)
         for reg, arg in zip(self._args_regs(), func.args):
             self.store_reg(reg, arg)
@@ -426,7 +427,7 @@ if __name__ == "__main__":
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
     compiler.extern_function("malloc", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("free", ir.FunctionType(I64, (I64,)))
-    compiler.extern_function("ctlz", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function("__ctzsi2", ir.FunctionType(I64, (I64,)))
     compiler.extern_function(
         "write",
         ir.FunctionType(

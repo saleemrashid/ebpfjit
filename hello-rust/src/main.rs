@@ -38,14 +38,17 @@ impl Write for FdWriter {
     }
 }
 
+#[allow(unused)]
 static STDOUT: FdWriter = FdWriter(1);
 
+#[allow(unused)]
 macro_rules! print {
     ($($arg:tt)*) => {{
         let _ = write!(STDOUT.clone(), $($arg)*);
     }};
 }
 
+#[allow(unused)]
 macro_rules! println {
     ($($arg:tt)*) => {{
         let _ = writeln!(STDOUT.clone(), $($arg)*);
