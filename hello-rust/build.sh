@@ -20,10 +20,12 @@ while [[ $# -gt 0 ]]; do
 done
 rustcflags+=("$@")
 
-cargo rustc "${cargoflags[@]}" -- "${rustcflags[@]}" \
-  | jq -s -r '.[] | select(.reason == "compiler-artifact") | .executable | select(. != null)' \
-  | while read output; do
-    name="$(basename "$output")"
+cargo metadata --format-version 1 --no-deps \
+  | jq -r '.packages[].targets[] | select(.kind | index("bin")) | .name' \
+  | while read target; do
+    output="$(cargo rustc --bin "$target" "${cargoflags[@]}" -- "${rustcflags[@]}" \
+      | jq -s -r 'map(select(.reason == "compiler-artifact") | .executable) | last')"
+    name="target/$(basename "$output")"
 
     # Some hacks to workaround rustc and LLVM bugs
     sed -E \
@@ -33,6 +35,9 @@ cargo rustc "${cargoflags[@]}" -- "${rustcflags[@]}" \
       "$output" \
     | llc -march=bpfel -mcpu=v3 -filetype=obj -bpf-stack-size=131072 -o "$name.o"
 
-    ../compile.py "$name.o" > "$name.ll"
-    echo "$name.ll" >&2
+    (
+      set -x
+      ../compile.py "$name.o" > "$name.ll"
+      clang "$name.ll" -o "$name"
+    )
   done
