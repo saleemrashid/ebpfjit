@@ -68,8 +68,21 @@ class Linker(object):
 
         section_addrs = self.symbol_addrs[symbol.section]
         if existing := section_addrs.get(symbol.start):
-            # FIXME(saleem): no two symbols should have the same address? but __rdl_oom and memmove did
-            self.symbol_aliases[symbol_id] = existing
+            import sys
+
+            if (
+                existing.section
+                or self.symbols[existing].start == self.symbols[existing].end
+            ):
+                self.symbols[symbol_id] = symbol
+                self.symbol_aliases[symbol_id] = symbol_id
+                section_addrs[symbol.start] = symbol_id
+
+                del self.symbols[existing]
+                self.symbol_aliases[existing] = symbol_id
+            else:
+                # FIXME(saleem): no two symbols should have the same address? but __rdl_oom and memmove did
+                self.symbol_aliases[symbol_id] = existing
         else:
             self.symbols[symbol_id] = symbol
             self.symbol_aliases[symbol_id] = symbol_id
@@ -323,10 +336,12 @@ class Linker(object):
 
         # TODO(saleem): some kind of navigable dict?
         for addr, symbol_id in self.symbol_addrs[section_id].items():
-            if not section_start <= addr < section_end:
+            symbol = self.symbols[symbol_id]
+            assert addr == symbol.start
+
+            if not (symbol.start >= section_start and symbol.end <= section_end):
                 continue
 
-            symbol = self.symbols[symbol_id]
             start = symbol.start - section_start
             end = symbol.end - section_start
 

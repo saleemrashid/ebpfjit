@@ -5,3 +5,4 @@ __pycache__/
 *.ll
 *.o
 a.out
+target/

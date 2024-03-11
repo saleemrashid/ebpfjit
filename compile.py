@@ -38,12 +38,20 @@ class Compiler(object):
         for i in range(BPF_ARGS):
             yield bpf.Reg(bpf.Reg.R1 + i)
 
-    def extern_function(self, name: str, type: ir.FunctionType) -> None:
+    def extern_function(
+        self, name: str, type: ir.FunctionType, internal: bool = False
+    ) -> None:
         # TODO(saleem): check conflicts
-        self.symbols[name] = ir.Function(self.module, type, name)
+        func = ir.Function(self.module, type, name)
+        if internal:
+            func.linkage = "internal"
+        self.symbols[name] = func
 
     def declare_data(
-        self, name: str, elements: list[Union[bytes, tuple[SymbolId, int]]]
+        self,
+        name: str,
+        elements: list[Union[bytes, tuple[SymbolId, int]]],
+        internal: bool = False,
     ) -> None:
         typs = []
         for item in elements:
@@ -53,9 +61,10 @@ class Compiler(object):
                 case (symbol_id, offset):
                     typs.append(I64)
 
-        self.symbols[name] = ir.GlobalVariable(
-            self.module, ir.LiteralStructType(typs), name
-        )
+        value = ir.GlobalVariable(self.module, ir.LiteralStructType(typs), name)
+        if internal:
+            value.linkage = "internal"
+        self.symbols[name] = value
 
     def define_data(
         self, name: str, elements: list[Union[bytes, tuple[SymbolId, int]]]
@@ -73,8 +82,8 @@ class Compiler(object):
         value = self.symbols[name]
         value.initializer = ir.Constant(value.value_type, elems)
 
-    def declare_function(self, name: str, pc: int) -> None:
-        self.extern_function(name, BPF_FUNC_TYPE)
+    def declare_function(self, name: str, pc: int, internal: bool = False) -> None:
+        self.extern_function(name, BPF_FUNC_TYPE, internal)
 
     def compile_function(
         self, name: str, start: int, end: int, text: list[bpf.Instruction]
@@ -208,7 +217,7 @@ class Compiler(object):
     def _compile(self, pc: int, ins: bpf.Instruction) -> None:
         self.builder.comment(f"{pc=}, {ins!r}")
         match ins:
-            case bpf.Alu(opcode, _, dst_reg, offset, imm):
+            case bpf.Alu(opcode, src_reg, dst_reg, offset, imm):
                 mask = I64(63) if ins.is_64 else I32(31)
                 zero = I64(0) if ins.is_64 else I32(0)
 
@@ -281,6 +290,24 @@ class Compiler(object):
                     case bpf.AluCode.ARSH:
                         # dst s>>= (src & mask)
                         dst = self.builder.ashr(dst, self.builder.and_(src, mask))
+                    case bpf.AluCode.END:
+                        # byte swap operations
+                        match ins.imm:
+                            case 16:
+                                dst = self.builder.trunc(dst, I16)
+                            case 32:
+                                dst = self.builder.trunc(dst, I32)
+                            case 64:
+                                dst = self.builder.zext(dst, I64)
+                            case _:
+                                raise ValueError(
+                                    f"invalid byte swap {ins.imm} for {opcode.code.name}"
+                                )
+
+                        if ins.is_64 or ins.opcode.source == bpf.Source.X:
+                            dst = self.builder.bswap(dst)
+
+                        dst = self.builder.zext(dst, I64)
                     case _:
                         raise NotImplementedError(f"{opcode!r}")
 
@@ -336,6 +363,9 @@ class Compiler(object):
                             case bpf.JumpCode.JSLT:
                                 # PC += offset if dst < src (signed)
                                 cond = self.builder.icmp_signed("<", dst, src)
+                            case bpf.JumpCode.JSLE:
+                                # PC += offset if dst <= src (signed)
+                                cond = self.builder.icmp_signed("<=", dst, src)
                             case _:
                                 raise NotImplementedError(f"{opcode!r}")
 
@@ -424,10 +454,16 @@ if __name__ == "__main__":
     compiler = Compiler()
 
     # TODO(saleem): implement helper functions
+    compiler.extern_function("tap_tx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
+    compiler.extern_function("tap_rx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
+    compiler.extern_function("tap_rx_wait", ir.FunctionType(I64, (I64,) * BPF_ARGS))
+    compiler.extern_function("micros", ir.FunctionType(I64, (I64,) * BPF_ARGS))
+
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
     compiler.extern_function("malloc", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("free", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("__ctzsi2", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function("__ctzti2", ir.FunctionType(I64, (I64,)))
     compiler.extern_function(
         "write",
         ir.FunctionType(
@@ -444,11 +480,14 @@ if __name__ == "__main__":
 
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
-            compiler.declare_function(symbol_id.name, symbol.start // 8)
+            compiler.declare_function(
+                symbol_id.name, symbol.start // 8, symbol_id.file_idx is not None
+            )
         else:
             compiler.declare_data(
                 symbol_id.name,
                 linker.symbol_values[symbol_id],
+                symbol_id.file_idx is not None,
             )
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:

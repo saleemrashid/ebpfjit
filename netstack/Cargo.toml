@@ -1,16 +1,17 @@
 [package]
-name = "rustbpf"
+name = "netstack"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-httparse = { version = "1.8.0", default-features = false }
+env_logger = "0.11.3"
+log = "0.4.21"
 
 [dependencies.smoltcp]
 git = "https://github.com/smoltcp-rs/smoltcp.git"
 # any_ip support in process_arp
 rev = "ca909a27814f8619baf30d5c602a4c865daeccfb"
 default-features = false
-features = ["alloc", "proto-ipv4", "medium-ethernet", "socket-tcp"]
+features = ["alloc", "log", "phy-tuntap_interface", "medium-ethernet", "proto-ipv4", "socket-tcp"]

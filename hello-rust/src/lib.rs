@@ -1,4 +1,5 @@
 #![feature(lang_items)]
+#![feature(panic_info_message)]
 #![no_std]
 
 extern crate alloc;
@@ -110,8 +111,10 @@ fn lang_start<T: Termination + 'static>(
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     // XXX(saleem): handling this any other way generates "too many args" compilation errors
+    eprintln!("panic! at the {:?}", info.message());
+    loop {}
     unsafe { core::hint::unreachable_unchecked() }
 }
 
