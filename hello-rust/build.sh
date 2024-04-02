@@ -36,6 +36,7 @@ cargo metadata --format-version 1 --no-deps \
       -e 's/@llvm\.memcpy\.p0\.p0\.i64\((.*), i1 false\)/@memcpy(\1)/g' \
       -e 's/^declare i32 @llvm\.ctlz\.i32.*$/declare i32 @__ctzsi2(i32)/g' \
       -e 's/^declare i64 @llvm\.ctlz\.i64.*$/declare i64 @__ctzti2(i64)/g' \
+      -e 's/^define weak hidden noundef /define internal noundef /g' \
       "$output" > "$name-bpf.ll"
     llc -O=3 -march=bpfel -mcpu=v4 -filetype=obj -bpf-stack-size=131072 "$name-bpf.ll" -o "$name-bpf.o"
 

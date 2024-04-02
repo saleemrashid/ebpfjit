@@ -51,6 +51,7 @@ fn parse_tcp_syn(buf: &mut [u8]) -> Option<IpEndpoint> {
 #[no_mangle]
 extern "C" fn netstack_loop() {
     println!("ready from eBPF!");
+
     let mut device = Phy::<1536>::new();
     let config = Config::new(EthernetAddress([0xde, 0xad, 0xbe, 0xef, 0x12, 0x34]).into());
 

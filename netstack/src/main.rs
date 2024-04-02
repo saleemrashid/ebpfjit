@@ -9,6 +9,8 @@ use std::slice;
 
 //mod netstack;
 
+mod access;
+
 static mut TAP_INTERFACE: Option<TunTapInterface> = None;
 
 #[link(name = "netstack", kind = "static")]

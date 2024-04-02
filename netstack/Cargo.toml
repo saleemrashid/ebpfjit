@@ -6,8 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bitvec = { version = "1.0.1", default-features = false, features = ["alloc"] }
 env_logger = "0.11.3"
 log = "0.4.21"
+splay = "0.1.8"
 
 [dependencies.smoltcp]
 git = "https://github.com/smoltcp-rs/smoltcp.git"

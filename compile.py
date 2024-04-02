@@ -33,6 +33,9 @@ class Compiler(object):
         self.blocks: dict[int, ir.Block] = {}
         self.unvisited_blocks: set[int] = set()
 
+        self.load: dict[ir.Type, ir.Function] = {}
+        self.store: dict[ir.Type, ir.Function] = {}
+
     @staticmethod
     def _args_regs() -> Iterator[bpf.Reg]:
         for i in range(BPF_ARGS):
@@ -40,12 +43,13 @@ class Compiler(object):
 
     def extern_function(
         self, name: str, type: ir.FunctionType, internal: bool = False
-    ) -> None:
+    ) -> ir.Function:
         # TODO(saleem): check conflicts
         func = ir.Function(self.module, type, name)
         if internal:
             func.linkage = "internal"
         self.symbols[name] = func
+        return func
 
     def declare_data(
         self,
@@ -85,6 +89,12 @@ class Compiler(object):
     def declare_function(self, name: str, pc: int, internal: bool = False) -> None:
         self.extern_function(name, BPF_FUNC_TYPE, internal)
 
+    def allow_region(self, start: ir.Value, end: ir.Value) -> ir.Value:
+        return self.builder.call(self.func_allow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
+
+    def unallow_region(self, start: ir.Value, end: ir.Value) -> ir.Value:
+        return self.builder.call(self.func_unallow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
+
     def compile_function(
         self, name: str, start: int, end: int, text: list[bpf.Instruction]
     ) -> ir.Module:
@@ -93,6 +103,15 @@ class Compiler(object):
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
         (stack_begin, stack_end) = self._alloc_stack(self.builder, BPF_STACK_SIZE)
+
+        self.allow_region(stack_begin, stack_end)
+        for value in self.symbols.values():
+            if isinstance(value, ir.Function):
+                continue
+            region_start = self.builder.ptrtoint(value, I64)
+            region_end = self.builder.ptrtoint(value.gep((I64(1),)), I64)
+            self.allow_region(region_start, region_end)
+
         self.registers = self._alloc_reg(self.builder)
         for reg, arg in zip(self._args_regs(), func.args):
             self.store_reg(reg, arg)
@@ -148,6 +167,15 @@ class Compiler(object):
 
         # Epilogue
         self.builder.position_at_end(self.exit_block)
+
+        self.unallow_region(stack_begin, stack_end)
+        for value in self.symbols.values():
+            if isinstance(value, ir.Function):
+                continue
+            region_start = self.builder.ptrtoint(value, I64)
+            region_end = self.builder.ptrtoint(value.gep((I64(1),)), I64)
+            self.unallow_region(region_start, region_end)
+
         self.builder.ret(self.load_reg(bpf.Reg.R0))
 
     @staticmethod
@@ -404,12 +432,11 @@ class Compiler(object):
 
                 if opcode.ins_class == bpf.InsClass.LDX:
                     # result = *(unsigned size *) (src + offset)
-                    result = self.builder.load(
-                        self.builder.inttoptr(
-                            self.builder.add(self.load_reg(src_reg), I64(offset)),
-                            size_type.as_pointer(),
-                        )
+                    src_ptr = self.builder.inttoptr(
+                        self.builder.add(self.load_reg(src_reg), I64(offset)),
+                        size_type.as_pointer(),
                     )
+                    result = self.builder.call(self.load[size_type], (src_ptr,))
 
                     match opcode.mode:
                         case bpf.Mode.MEM:
@@ -433,7 +460,7 @@ class Compiler(object):
                         self.builder.add(self.load_reg(dst_reg), I64(offset)),
                         size_type.as_pointer(),
                     )
-                    self.builder.store(src, dst_ptr)
+                    self.builder.call(self.store[size_type], (dst_ptr, src))
 
             case _:
                 raise NotImplementedError(f"{ins!r}")
@@ -453,15 +480,26 @@ if __name__ == "__main__":
 
     compiler = Compiler()
 
+    for ty in (I8, I16, I32, I64):
+        compiler.load[ty] = compiler.extern_function(
+            f"load{ty.width}", ir.FunctionType(ty, (ty.as_pointer(),))
+        )
+        compiler.store[ty] = compiler.extern_function(
+            f"store{ty.width}", ir.FunctionType(ir.VoidType(), (ty.as_pointer(), ty))
+        )
+
     # TODO(saleem): implement helper functions
+    compiler.func_allow_region = compiler.extern_function("allow_region", ir.FunctionType(ir.VoidType(), (I64, I64)))
+    compiler.func_unallow_region = compiler.extern_function("unallow_region", ir.FunctionType(ir.VoidType(), (I64, I64)))
+
     compiler.extern_function("tap_tx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
     compiler.extern_function("tap_rx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
     compiler.extern_function("tap_rx_wait", ir.FunctionType(I64, (I64,) * BPF_ARGS))
     compiler.extern_function("micros", ir.FunctionType(I64, (I64,) * BPF_ARGS))
 
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
-    compiler.extern_function("malloc", ir.FunctionType(I64, (I64,)))
-    compiler.extern_function("free", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function("my_malloc", ir.FunctionType(I64, (I64,)))
+    compiler.extern_function("my_free", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("__ctzsi2", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("__ctzti2", ir.FunctionType(I64, (I64,)))
     compiler.extern_function(

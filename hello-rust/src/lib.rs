@@ -12,8 +12,8 @@ use core::{
 extern "C" {
     // XXX(saleem): for some reason, Rust drops the arguments when it does fastcc?
     // Use variadics to force it to keep them.
-    fn malloc(size: usize, ...) -> *mut u8;
-    fn free(ptr: *mut u8, ...);
+    fn my_malloc(size: usize, ...) -> *mut u8;
+    fn my_free(ptr: *mut u8, ...);
     fn write(fd: i32, buf: *const u8, count: usize, ...);
 }
 
@@ -21,11 +21,11 @@ struct Allocator;
 
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { malloc(layout.size()) }
+        unsafe { my_malloc(layout.size()) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        unsafe { free(ptr) }
+        unsafe { my_free(ptr) }
     }
 }
 
