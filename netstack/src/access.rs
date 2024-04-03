@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, default, mem::size_of};
+use std::{cmp::Ordering, collections::BTreeSet, default, fmt::Debug, iter, mem::size_of, ops::Bound};
 
 use bitvec::{bitbox, boxed::BitBox};
 
@@ -27,82 +27,112 @@ const ADDR_MASK: u64 = (1 << ADDR_BITS) - 1;
 const ENTRY_SHIFT: u32 = 24;
 const ENTRY_MASK: u64 = (1 << ENTRY_SHIFT) - 1;
 
+struct Region {
+    start: u64,
+    end: u64,
+}
+
+impl Region {
+    const ADDR_BITS: u32 = 48;
+    const ADDR_MASK: u64 = (1 << Self::ADDR_BITS) - 1;
+
+    // const SIZE_BITS: u32 = u64::BITS - Self::ADDR_BITS;
+    // const SIZE_MASK: u64 = (1 << Self::SIZE_BITS) - 1;
+
+    pub fn new(start: u64, end: u64) -> Self {
+        assert!(start & !Self::ADDR_MASK == 0);
+        assert!(end & !Self::ADDR_MASK == 0);
+        assert!(start < end);
+
+        Self {
+            start: start,
+            end: end,
+        }
+
+        // let size = end - start;
+        // assert!(size & !Self::SIZE_MASK == 0);
+
+        // Self((start >> Self::ADDR_BITS) << Self::SIZE_BITS | size)
+    }
+
+    pub fn start(&self) -> u64 {
+        // self.0 >> Self::SIZE_BITS
+        self.start
+    }
+
+    pub fn end(&self) -> u64 {
+        // self.start() + self.size()
+        self.end
+    }
+
+    // pub fn size(&self) -> u64 {
+    //     self.0 & Self::SIZE_MASK
+    // }
+
+    pub fn compare(&self, start: u64, end: u64) -> Ordering {
+        if self.start() >= end {
+            Ordering::Greater
+        } else if self.end() < start {
+            Ordering::Less
+        } else {
+            Ordering::Equal
+        }
+    }
+}
+
+impl Debug for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Region")
+            .field("start", &format_args!("0x{:x}", self.start()))
+            .field("end", &format_args!("0x{:x}", self.end()))
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 pub struct Regions {
-    entries: [Option<BitBox>; 1 << (ADDR_BITS - ENTRY_SHIFT)]
+    data: Vec<Region>
 }
 
 impl Regions {
-    const ARRAY_REPEAT_VALUE: Option<BitBox> = None;
-
     pub const fn new() -> Self {
         Self {
-            entries: [Self::ARRAY_REPEAT_VALUE; 1 << (ADDR_BITS - ENTRY_SHIFT)]
+            data: Vec::new(),
         }
     }
 
-    #[inline]
-    fn indices(addr: u64) -> (usize, usize) {
-        assert!(addr & !ADDR_MASK == 0);
-        ((addr >> ENTRY_SHIFT) as usize, (addr & ENTRY_MASK) as usize)
-    }
-
-    #[inline]
-    fn entry_mut(&mut self, idx: usize) -> &mut BitBox {
-        self.entries[idx].get_or_insert_with(|| bitbox![0; (1 << ENTRY_SHIFT)])
-    }
-
-    fn set(&mut self, start: u64, end: u64, value: bool) {
-        assert!(start <= end);
-        let (start_entry, start_offset) = Self::indices(start);
-        let (end_entry, end_offset) = Self::indices(end);
-
-        if start_entry == end_entry {
-            self.entry_mut(start_entry)[start_offset..end_offset].fill(value);
-        } else {
-            self.entry_mut(start_entry)[start_offset..].fill(value);
-            for entry in start_entry + 1..end_entry {
-                self.entry_mut(entry).fill(value);
+    pub fn set(&mut self, start: u64, end: u64) {
+        assert!(start < end);
+        let (start_bound, start) = match self.data.binary_search_by(|region| region.start().cmp(&start)) {
+            Ok(index) => (Bound::Included(index), self.data[index].start()),
+            Err(index) => (Bound::Excluded(index), start),
+        };
+        let (end_bound, end) = match self.data.binary_search_by(|region| region.end().cmp(&(end - 1))) {
+            Ok(index) => (Bound::Included(index), self.data[index].end()),
+            Err(index) => (Bound::Excluded(index + 1), end),
+        };
+        match (start_bound, end_bound) {
+            (Bound::Excluded(start_index), Bound::Excluded(end_index)) if start_index + 1 == end_index => {
+                self.data.insert(start_index, Region::new(start, end));
             }
-            self.entry_mut(end_entry)[..end_offset].fill(value)
+            _ => {
+                self.data.splice((start_bound, end_bound), iter::once(Region::new(start, end)));
+            }
         }
     }
 
-    pub fn allow(&mut self, start: u64, end: u64) {
-        self.set(start, end, true)
-    }
-
-    pub fn unallow(&mut self, start: u64, end: u64) {
-        self.set(start, end, false)
-    }
-
-    pub fn check(&self, start: u64, end: u64) -> bool {
-        assert!(start <= end);
-        let (start_entry, start_offset) = Self::indices(start);
-        let (end_entry, end_offset) = Self::indices(end);
-
-        if start_entry == end_entry {
-            self.entries[start_entry].as_ref().map_or(false, |x| x[start_offset..end_offset].all())
-        } else {
-            if self.entries[start_entry].as_ref().map_or(true, |x| x[start_offset..].not_all()) {
-                return false
-            }
-            for entry in start_entry + 1..end_entry {
-                if self.entries[entry].as_ref().map_or(true, |x| x.not_all()) {
-                    return false
-                }
-            }
-            if self.entries[end_entry].as_ref().map_or(true, |x| x[..end_offset].not_all()) {
-                return false
-            }
-            true
-        }
+    pub fn check(&mut self, start: u64, end: u64) -> bool {
+        self.data.binary_search_by(|region| region.compare(start, end)).is_ok()
     }
 }
 
 static mut REGIONS: Regions = Regions::new();
 
 #[no_mangle]
-extern "C" fn my_malloc(size: usize) -> *mut u8 {
+extern "C" fn my_malloc(mut size: usize) -> *mut u8 {
+    if size & 7 != 0 {
+        size += size & 7;
+    }
     let ptr = unsafe { malloc(size) };
     // eprintln!("my_malloc({size}) = {:?}", ptr);
     let start = ptr as usize;
@@ -121,7 +151,8 @@ extern "C" fn my_free(ptr: *mut u8) {
 extern "C" fn allow_region(start: usize, end: usize) {
     // eprintln!("allowing 0x{start:x}-0x{end:x}");
     unsafe {
-        REGIONS.allow(start as u64, end as u64);
+        REGIONS.set(start as u64, end as u64);
+        // eprintln!("regions = {REGIONS:?}");
         /* assert!(REGIONS.check(start as u64, end as u64));
         for i in start..end {
             assert!(REGIONS.check(i as u64, (i+1) as u64));
@@ -141,11 +172,12 @@ unsafe fn load<T>(src: *const T) -> T {
     let start = src as usize as u64;
     let end = start + core::mem::size_of::<T>() as u64;
 
-    /*if unsafe { !REGIONS.check(start, start + 1) } {
+    if unsafe { !REGIONS.check(start, end) } {
+        unsafe { eprintln!("{REGIONS:?}"); }
         eprintln!("access not permitted, 0x{:x}-0x{:x}", start, end);
         unsafe { core::arch::asm!("udf #0"); }
-    }*/
-    
+    }
+
     core::ptr::read(src)
 }
 
@@ -153,10 +185,11 @@ unsafe fn store<T>(dst: *mut T, src: T) {
     let start = dst as usize as u64;
     let end = start + core::mem::size_of::<T>() as u64;
 
-    /*if unsafe { !REGIONS.check(start, start + 1) } {
+    if unsafe { !REGIONS.check(start, end) } {
+        unsafe { eprintln!("{REGIONS:?}"); }
         eprintln!("access not permitted, 0x{:x}-0x{:x}", start, end);
         unsafe { core::arch::asm!("udf #0"); }
-    }*/
+    }
 
     core::ptr::write(dst, src)
 }
