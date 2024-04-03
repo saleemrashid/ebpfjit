@@ -9,8 +9,6 @@ edition = "2021"
 httparse = { version = "1.8.0", default-features = false }
 
 [dependencies.smoltcp]
-git = "https://github.com/smoltcp-rs/smoltcp.git"
-# any_ip support in process_arp
-rev = "ca909a27814f8619baf30d5c602a4c865daeccfb"
+path = "vendor/smoltcp"
 default-features = false
 features = ["alloc", "proto-ipv4", "medium-ethernet", "socket-tcp"]

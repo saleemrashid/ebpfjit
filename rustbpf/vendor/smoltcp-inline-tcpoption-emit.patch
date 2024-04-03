@@ -1,0 +1,12 @@
+diff --git a/src/wire/tcp.rs b/src/wire/tcp.rs
+index a6612d1..b2ae7f9 100644
+--- a/src/wire/tcp.rs
++++ b/src/wire/tcp.rs
+@@ -706,6 +706,7 @@ impl<'a> TcpOption<'a> {
+         }
+     }
+ 
++    #[inline(always)]
+     pub fn emit<'b>(&self, buffer: &'b mut [u8]) -> &'b mut [u8] {
+         let length;
+         match *self {

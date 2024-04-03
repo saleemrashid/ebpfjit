@@ -1,0 +1,12 @@
+diff --git a/library/core/src/fmt/mod.rs b/library/core/src/fmt/mod.rs
+index e880d575..908a867f 100644
+--- a/library/core/src/fmt/mod.rs
++++ b/library/core/src/fmt/mod.rs
+@@ -1302,6 +1302,7 @@ fn wrap_buf<'b, 'c, F>(&'b mut self, wrap: F) -> Formatter<'c>
+     /// assert_eq!(format!("{:0>#8}", Foo::new(-1)), "00-Foo 1");
+     /// ```
+     #[stable(feature = "rust1", since = "1.0.0")]
++    #[inline(always)]
+     pub fn pad_integral(&mut self, is_nonnegative: bool, prefix: &str, buf: &str) -> Result {
+         let mut width = buf.len();
+ 

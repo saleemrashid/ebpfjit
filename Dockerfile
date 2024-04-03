@@ -7,7 +7,8 @@ RUN --mount=type=cache,target=/var/cache/apt/archives \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         curl \
-        software-properties-common
+        software-properties-common && \
+    rm -rf /var/apt/lists/*
 
 FROM base as rust
 
@@ -33,6 +34,7 @@ RUN --mount=type=cache,target=/var/cache/apt/archives \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         build-essential \
+        git \
         jq \
         clang-18 \
         llvm-18-dev \
@@ -41,7 +43,8 @@ RUN --mount=type=cache,target=/var/cache/apt/archives \
         python3.12 \
         python3.12-venv \
         libz-dev \
-        libzstd-dev
+        libzstd-dev && \
+    rm -rf /var/apt/lists/*
 
 ENV RUSTUP_HOME=/opt/rustup
 ENV CARGO_HOME=/opt/cargo
