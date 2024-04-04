@@ -7,7 +7,8 @@ from llvmlite import ir  # type: ignore
 
 import bpf
 import itertools
-from linker import Linker, SectionId, SymbolId
+from linker import Linker, SectionId, SymbolId, Symbol
+from llvmutils import GlobalAlias
 
 I8 = ir.IntType(8)
 I16 = ir.IntType(16)
@@ -32,6 +33,7 @@ class Compiler(object):
         self.symbols: dict[str, ir.Value] = {}
         self.blocks: dict[int, ir.Block] = {}
         self.unvisited_blocks: set[int] = set()
+        self.sections: dict[SectionId, ir.Value] = {}
 
         self.load: dict[ir.Type, ir.Function] = {}
         self.store: dict[ir.Type, ir.Function] = {}
@@ -53,9 +55,19 @@ class Compiler(object):
 
     def declare_data(
         self,
-        name: str,
-        elements: list[Union[bytes, tuple[SymbolId, int]]],
-        internal: bool = False,
+        symbol_id: SymbolId,
+        symbol: Symbol,
+    ) -> None:
+        aliasee = (
+            self.sections[symbol.section]
+            .ptrtoint(I64)
+            .add(I64(symbol.start))
+            .inttoptr(I8.as_pointer())
+        )
+        self.symbols[symbol_id.name] = GlobalAlias(self.module, aliasee, symbol_id.name)
+
+    def declare_section(
+        self, section: SectionId, elements: list[Union[bytes, tuple[SymbolId, int]]]
     ) -> None:
         typs = []
         for item in elements:
@@ -65,13 +77,14 @@ class Compiler(object):
                 case (symbol_id, offset):
                     typs.append(I64)
 
-        value = ir.GlobalVariable(self.module, ir.LiteralStructType(typs), name)
-        if internal:
-            value.linkage = "internal"
-        self.symbols[name] = value
+        # TODO(saleem): tidy up name mangling?
+        name = f"section .{section.name.lower()}"
+        variable = ir.GlobalVariable(self.module, ir.LiteralStructType(typs), name)
+        variable.linkage = "internal"
+        self.sections[section] = variable
 
-    def define_data(
-        self, name: str, elements: list[Union[bytes, tuple[SymbolId, int]]]
+    def define_section(
+        self, section: SectionId, elements: list[Union[bytes, tuple[SymbolId, int]]]
     ) -> None:
         elems = []
         for item in elements:
@@ -83,8 +96,9 @@ class Compiler(object):
                         self.symbols[symbol_id.name].ptrtoint(I64).add(I64(offset))
                     )
 
-        value = self.symbols[name]
-        value.initializer = ir.Constant(value.value_type, elems)
+        value = ir.Constant.literal_struct(elems)
+        variable = self.sections[section]
+        variable.initializer = value
 
     def declare_function(self, name: str, pc: int, internal: bool = False) -> None:
         self.extern_function(name, BPF_FUNC_TYPE, internal)
@@ -489,8 +503,12 @@ if __name__ == "__main__":
         )
 
     # TODO(saleem): implement helper functions
-    compiler.func_allow_region = compiler.extern_function("allow_region", ir.FunctionType(ir.VoidType(), (I64, I64)))
-    compiler.func_unallow_region = compiler.extern_function("unallow_region", ir.FunctionType(ir.VoidType(), (I64, I64)))
+    compiler.func_allow_region = compiler.extern_function(
+        "allow_region", ir.FunctionType(ir.VoidType(), (I64, I64))
+    )
+    compiler.func_unallow_region = compiler.extern_function(
+        "unallow_region", ir.FunctionType(ir.VoidType(), (I64, I64))
+    )
 
     compiler.extern_function("tap_tx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
     compiler.extern_function("tap_rx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
@@ -516,23 +534,27 @@ if __name__ == "__main__":
 
     # TODO(saleem): this is hacky, but I'm prototyping the compiler API so it doesn't matter
 
+    for section, struct in linker.section_structs.items():
+        if section == SectionId.Text:
+            continue
+        compiler.declare_section(section, struct)
+
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
             compiler.declare_function(
                 symbol_id.name, symbol.start // 8, symbol_id.file_idx is not None
             )
         else:
-            compiler.declare_data(
-                symbol_id.name,
-                linker.symbol_values[symbol_id],
-                symbol_id.file_idx is not None,
-            )
+            compiler.declare_data(symbol_id, symbol)
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
             compiler.compile_function(
                 symbol_id.name, symbol.start // 8, symbol.end // 8, linker.program
             )
-        else:
-            compiler.define_data(symbol_id.name, linker.symbol_values[symbol_id])
+
+    for section, struct in linker.section_structs.items():
+        if section == SectionId.Text:
+            continue
+        compiler.define_section(section, struct)
 
     print(compiler.module)

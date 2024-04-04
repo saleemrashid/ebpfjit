@@ -50,15 +50,16 @@ class Linker(object):
         self.raw_sections: dict[SectionId, bytearray] = {
             section_id: bytearray() for section_id in SectionId
         }
+        # TODO(saleem): break this out into a "struct" type
+        self.section_structs: dict[
+            SectionId, list[Union[bytes, tuple[SymbolId, int]]]
+        ] = {section_id: [] for section_id in SectionId}
 
         self.symbols: dict[SymbolId, Symbol] = {}
         self.symbol_aliases: dict[SymbolId, SymbolId] = {}
         self.symbol_addrs: dict[SectionId, dict[int, SymbolId]] = {
             section_id: {} for section_id in SectionId
         }
-        self.symbol_values: dict[
-            SymbolId, list[Union[bytes, tuple[SymbolId, int]]]
-        ] = {}
 
         self.program: list[bpf.Instruction] = []
 
@@ -299,7 +300,6 @@ class Linker(object):
         section_start: int,
         raw_data: bytes,
     ) -> None:
-        section_end = section_start + len(raw_data)
         relocs = {}
 
         for symbol_table, reloc in self._iter_relocations(elf, idx):
@@ -334,34 +334,17 @@ class Linker(object):
                 case _:
                     raise NotImplementedError(f"{reloc_type.name} not supported")
 
-        # TODO(saleem): some kind of navigable dict?
-        for addr, symbol_id in self.symbol_addrs[section_id].items():
-            symbol = self.symbols[symbol_id]
-            assert addr == symbol.start
+        reloc_offsets = sorted(relocs.keys())
+        struct = self.section_structs[section_id]
 
-            if not (symbol.start >= section_start and symbol.end <= section_end):
-                continue
-
-            start = symbol.start - section_start
-            end = symbol.end - section_start
-
-            reloc_offsets = [
-                reloc_offset
-                for reloc_offset in sorted(relocs.keys())
-                if start <= reloc_offset < end
-            ]
-
-            struct: list[Union[bytes, tuple[SymbolId, int]]] = []
-            i = start
-            for reloc_offset in reloc_offsets:
-                if i < reloc_offset:
-                    struct.append(raw_data[i:reloc_offset])
-                struct.append(relocs[reloc_offset])
-                i = reloc_offset + 8
-            if i < end:
-                struct.append(raw_data[i:end])
-
-            self.symbol_values[symbol_id] = struct
+        i = 0
+        for reloc_offset in reloc_offsets:
+            if i < reloc_offset:
+                struct.append(raw_data[i:reloc_offset])
+            struct.append(relocs[reloc_offset])
+            i = reloc_offset + 8
+        if i < len(raw_data):
+            struct.append(raw_data[i:])
 
     def add_elf(self, elf: ELFFile) -> None:
         file_idx = self._file_idx
