@@ -54,7 +54,16 @@ class Compiler(object):
             .add(I64(symbol.start))
             .inttoptr(I8.as_pointer())
         )
-        self.symbols[symbol_id] = GlobalAlias(self.module, aliasee, symbol_id.name)
+        if symbol_id.file_idx is None:
+            name = symbol_id.name
+            linkage = None
+        else:
+            name = f"[{symbol_id.file_idx}]:{symbol_id.name}"
+            linkage = "private"
+
+        alias = GlobalAlias(self.module, aliasee, name)
+        alias.linkage = linkage
+        self.symbols[symbol_id] = alias
 
     def declare_section(
         self, section: SectionId, elements: list[Union[bytes, tuple[SymbolId, int]]]
@@ -70,7 +79,7 @@ class Compiler(object):
         # TODO(saleem): tidy up name mangling?
         name = f"section .{section.name.lower()}"
         variable = ir.GlobalVariable(self.module, ir.LiteralStructType(typs), name)
-        variable.linkage = "internal"
+        variable.linkage = "private"
         self.sections[section] = variable
 
     def define_section(
@@ -100,10 +109,16 @@ class Compiler(object):
     def declare_function(
         self, symbol: SymbolId, type: ir.FunctionType = BPF_FUNC_TYPE
     ) -> None:
-        # TODO(saleem): check conflicts
-        func = ir.Function(self.module, type, symbol.name)
-        if symbol.file_idx is not None:
-            func.linkage = "internal"
+        # TODO(saleem): deduplicate this with declare_data
+        if symbol.file_idx is None:
+            name = symbol.name
+            linkage = None
+        else:
+            name = f"[{symbol.file_idx}]:{symbol.name}"
+            linkage = "private"
+
+        func = ir.Function(self.module, type, name)
+        func.linkage = linkage
         self.symbols[symbol] = func
 
     def compile_function(
