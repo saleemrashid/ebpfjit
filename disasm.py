@@ -1,12 +1,14 @@
 import pprint
-from typing import Iterator
+from typing import Iterator, TypeVar
 
 from bitstring import ConstBitStream
 
 import bpf
 
+_T = TypeVar("_T")
 
-def iter_disasm_one(s: ConstBitStream) -> Iterator[bpf.Instruction]:
+
+def iter_disasm_one(s: ConstBitStream) -> Iterator[bpf.Instruction[_T]]:
     ins_fields = s.read(5)
     ins_class = bpf.InsClass(s.read("u3"))
     src_reg = s.read("u4")
@@ -62,12 +64,12 @@ def iter_disasm_one(s: ConstBitStream) -> Iterator[bpf.Instruction]:
         raise NotImplementedError(f"{ins_class.name}")
 
 
-def iter_disasm(stream: ConstBitStream) -> Iterator[bpf.Instruction]:
+def iter_disasm(stream: ConstBitStream) -> Iterator[bpf.Instruction[_T]]:
     while stream.bitpos < len(stream):
         yield from iter_disasm_one(stream)
 
 
-def disasm(stream: ConstBitStream) -> list[bpf.Instruction]:
+def disasm(stream: ConstBitStream) -> list[bpf.Instruction[_T]]:
     return list(iter_disasm(stream))
 
 

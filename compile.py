@@ -7,7 +7,7 @@ from llvmlite import ir  # type: ignore
 
 import bpf
 import itertools
-from linker import Linker, SectionId, SymbolId, Symbol
+from linker import Linker, SectionId, SymbolId, Symbol, BPF_INSTRUCTION_SIZE
 from llvmutils import GlobalAlias
 
 I8 = ir.IntType(8)
@@ -30,7 +30,7 @@ BPF_FUNC_TYPE = ir.FunctionType(I64, (I64,) * BPF_ARGS)
 class Compiler(object):
     def __init__(self) -> None:
         self.module = ir.Module()
-        self.symbols: dict[str, ir.Value] = {}
+        self.symbols: dict[SymbolId, ir.Value] = {}
         self.blocks: dict[int, ir.Block] = {}
         self.unvisited_blocks: set[int] = set()
         self.sections: dict[SectionId, ir.Value] = {}
@@ -43,16 +43,6 @@ class Compiler(object):
         for i in range(BPF_ARGS):
             yield bpf.Reg(bpf.Reg.R1 + i)
 
-    def extern_function(
-        self, name: str, type: ir.FunctionType, internal: bool = False
-    ) -> ir.Function:
-        # TODO(saleem): check conflicts
-        func = ir.Function(self.module, type, name)
-        if internal:
-            func.linkage = "internal"
-        self.symbols[name] = func
-        return func
-
     def declare_data(
         self,
         symbol_id: SymbolId,
@@ -64,7 +54,7 @@ class Compiler(object):
             .add(I64(symbol.start))
             .inttoptr(I8.as_pointer())
         )
-        self.symbols[symbol_id.name] = GlobalAlias(self.module, aliasee, symbol_id.name)
+        self.symbols[symbol_id] = GlobalAlias(self.module, aliasee, symbol_id.name)
 
     def declare_section(
         self, section: SectionId, elements: list[Union[bytes, tuple[SymbolId, int]]]
@@ -74,7 +64,7 @@ class Compiler(object):
             match item:
                 case Buffer():
                     typs.append(ir.ArrayType(I8, len(item)))
-                case (symbol_id, offset):
+                case (_, _):
                     typs.append(I64)
 
         # TODO(saleem): tidy up name mangling?
@@ -92,16 +82,11 @@ class Compiler(object):
                 case Buffer():
                     elems.append(ir.Constant(ir.ArrayType(I8, len(item)), item))
                 case (symbol_id, offset):
-                    elems.append(
-                        self.symbols[symbol_id.name].ptrtoint(I64).add(I64(offset))
-                    )
+                    elems.append(self.symbols[symbol_id].ptrtoint(I64).add(I64(offset)))
 
         value = ir.Constant.literal_struct(elems)
         variable = self.sections[section]
         variable.initializer = value
-
-    def declare_function(self, name: str, pc: int, internal: bool = False) -> None:
-        self.extern_function(name, BPF_FUNC_TYPE, internal)
 
     def allow_region(self, start: ir.Value, end: ir.Value) -> ir.Value:
         return self.builder.call(self.func_allow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
@@ -109,10 +94,24 @@ class Compiler(object):
     def unallow_region(self, start: ir.Value, end: ir.Value) -> ir.Value:
         return self.builder.call(self.func_unallow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
 
+    def extern_function(self, name: str, type: ir.FunctionType) -> ir.Function:
+        self.declare_function(SymbolId(name, False, None), type)
+
+    def declare_function(
+        self, symbol: SymbolId, type: ir.FunctionType = BPF_FUNC_TYPE
+    ) -> None:
+        # TODO(saleem): check conflicts
+        func = ir.Function(self.module, type, symbol.name)
+        if symbol.file_idx is not None:
+            func.linkage = "internal"
+        self.symbols[symbol] = func
+
     def compile_function(
-        self, name: str, start: int, end: int, text: list[bpf.Instruction]
+        self, symbol_id: SymbolId, symbol: Symbol, text: list[bpf.Instruction[SymbolId]]
     ) -> ir.Module:
-        func = self.symbols[name]
+        func = self.symbols[symbol_id]
+        start = symbol.start // BPF_INSTRUCTION_SIZE
+        end = symbol.end // BPF_INSTRUCTION_SIZE
 
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
@@ -217,7 +216,9 @@ class Compiler(object):
             self.unvisited_blocks.add(pc)
             return block
 
-    def _create_blocks(self, text: list[bpf.Instruction], start: int, end: int) -> None:
+    def _create_blocks(
+        self, text: list[bpf.Instruction[SymbolId]], start: int, end: int
+    ) -> None:
         self.blocks.clear()
         needs_block = True
 
@@ -240,7 +241,7 @@ class Compiler(object):
             value = self.builder.trunc(value, I32)
         return value
 
-    def load_src(self, ins: Union[bpf.Alu, bpf.Jump]) -> ir.Value:
+    def load_src(self, ins: Union[bpf.Alu, bpf.Jump[SymbolId]]) -> ir.Value:
         match ins.opcode.source:
             case bpf.Source.K:
                 if ins.is_64:
@@ -256,7 +257,7 @@ class Compiler(object):
             value = self.builder.zext(value, I64)
         self.builder.store(value, self.registers[reg])
 
-    def _compile(self, pc: int, ins: bpf.Instruction) -> None:
+    def _compile(self, pc: int, ins: bpf.Instruction[SymbolId]) -> None:
         self.builder.comment(f"{pc=}, {ins!r}")
         match ins:
             case bpf.Alu(opcode, src_reg, dst_reg, offset, imm):
@@ -364,7 +365,8 @@ class Compiler(object):
                                 self.load_reg(bpf.Reg(imm)), BPF_FUNC_TYPE.as_pointer()
                             )
                         else:
-                            func = self.symbols[symbol.name]
+                            assert symbol is not None
+                            func = self.symbols[symbol]
 
                         args = [self.load_reg(reg) for reg in self._args_regs()]
                         ret = self.builder.call(func, args)
@@ -425,15 +427,15 @@ class Compiler(object):
                                 self._create_block(next_pc),
                             )
 
-            case bpf.LoadImm64(opcode, src, dst_reg, offset, _, _, addr):
+            case bpf.LoadImm64(opcode, src, dst_reg, offset, _, _, symbol):
                 match src:
                     case bpf.LoadSource.IMM64:
-                        if addr is None:
+                        if symbol is None:
                             result = I64(ins.imm64)
                         else:
                             # TODO(saleem): this should probably check that imm64 == 0 for non-pointers
                             result = self.builder.add(
-                                self.builder.ptrtoint(self.symbols[ins.addr.name], I64),
+                                self.builder.ptrtoint(self.symbols[symbol], I64),
                                 I64(ins.imm64),
                             )
                     case _:
@@ -541,16 +543,12 @@ if __name__ == "__main__":
 
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
-            compiler.declare_function(
-                symbol_id.name, symbol.start // 8, symbol_id.file_idx is not None
-            )
+            compiler.declare_function(symbol_id)
         else:
             compiler.declare_data(symbol_id, symbol)
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
-            compiler.compile_function(
-                symbol_id.name, symbol.start // 8, symbol.end // 8, linker.program
-            )
+            compiler.compile_function(symbol_id, symbol, linker.program)
 
     for section, struct in linker.section_structs.items():
         if section == SectionId.Text:

@@ -2,14 +2,14 @@ from llvmlite import ir  # type: ignore
 
 
 class GlobalAlias(ir.GlobalValue):
-    def __init__(self, module, aliasee, name):
+    def __init__(self, module: ir.Module, aliasee: ir.Value, name: str):
         super().__init__(module, aliasee.type, name=name)
         self.aliasee = aliasee
         self.unnamed_addr = False
         self.addrspace = aliasee.addrspace
         self.parent.add_global(self)
 
-    def descr(self, buf):
+    def descr(self, buf: list[str]) -> None:
         if self.linkage:
             buf.append(self.linkage + " ")
         if self.storage_class:

@@ -1,5 +1,7 @@
 import enum
-from typing import NamedTuple, Optional, Union
+from typing import NamedTuple, Optional, Union, Generic, TypeVar
+
+_T = TypeVar("_T")
 
 
 class _IntEnum(enum.IntEnum):
@@ -130,13 +132,13 @@ class Alu(NamedTuple):
         return self.opcode.ins_class == InsClass.ALU64
 
 
-class Jump(NamedTuple):
+class Jump(NamedTuple, Generic[_T]):
     opcode: JumpOpcode
     src_reg: Reg
     dst_reg: Reg
     offset: int
     imm: int
-    symbol: Optional[str]
+    symbol: Optional[_T]
 
     @property
     def is_64(self) -> bool:
@@ -171,14 +173,14 @@ class LoadSource(_IntEnum):
     MAP_VAL_BY_IDX = 0x6
 
 
-class LoadImm64(NamedTuple):
+class LoadImm64(NamedTuple, Generic[_T]):
     opcode: LoadStoreOpcode
     src: LoadSource
     dst_reg: Reg
     offset: int
     imm32: int
     next_imm: int
-    addr: Optional[int]
+    symbol: Optional[_T]
 
     @property
     def imm64(self) -> int:
@@ -187,4 +189,4 @@ class LoadImm64(NamedTuple):
 
 
 Opcode = Union[AluOpcode, JumpOpcode, LoadStoreOpcode]
-Instruction = Optional[Union[Alu, Jump, LoadStore, LoadImm64]]
+Instruction = Optional[Union[Alu, Jump[_T], LoadStore, LoadImm64[_T]]]

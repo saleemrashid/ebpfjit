@@ -61,16 +61,14 @@ class Linker(object):
             section_id: {} for section_id in SectionId
         }
 
-        self.program: list[bpf.Instruction] = []
+        self.program: list[bpf.Instruction[SymbolId]] = []
 
-    def _add_symbol(self, symbol_id: SymbolId, symbol: Symbol):
+    def _add_symbol(self, symbol_id: SymbolId, symbol: Symbol) -> None:
         if symbol_id in self.symbol_aliases:
             raise ValueError(f"duplicate symbol {symbol_id!r}")
 
         section_addrs = self.symbol_addrs[symbol.section]
         if existing := section_addrs.get(symbol.start):
-            import sys
-
             if (
                 existing.section
                 or self.symbols[existing].start == self.symbols[existing].end
@@ -94,7 +92,7 @@ class Linker(object):
         if symbol_id not in self.symbol_aliases:
             return symbol_id, offset
 
-        symbol = self.symbols.get(self.symbol_aliases[symbol_id])
+        symbol = self.symbols[self.symbol_aliases[symbol_id]]
         section_addrs = self.symbol_addrs[symbol.section]
 
         if resolved := section_addrs.get(symbol.start + offset):
@@ -235,7 +233,9 @@ class Linker(object):
         raw_data: bytes,
     ) -> None:
         section_addrs = self.symbol_addrs[SectionId.Text]
-        program = disasm.disasm(ConstBitStream(bytes=raw_data))
+        program: list[bpf.Instruction[SymbolId]] = disasm.disasm(
+            ConstBitStream(bytes=raw_data)
+        )
 
         for symbol_table, reloc in self._iter_relocations(elf, idx):
             elf_symbol = symbol_table.get_symbol(reloc["r_info_sym"])
@@ -257,7 +257,7 @@ class Linker(object):
                     program[pc] = ins._replace(
                         imm32=(offset & 0xFFFFFFFF),
                         next_imm=(offset >> 32),
-                        addr=resolved,
+                        symbol=resolved,
                     )
 
                 case RelocationType.R_BPF_64_32:
@@ -286,7 +286,6 @@ class Linker(object):
 
                     offset = (pc + 1 + ins.imm) * BPF_INSTRUCTION_SIZE
                     resolved = section_addrs[base_addr + offset]
-
                     program[pc] = ins._replace(symbol=resolved)
 
         self.program.extend(program)
