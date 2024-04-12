@@ -1,11 +1,34 @@
-use std::{cmp::Ordering, collections::BTreeSet, default, fmt::Debug, iter, mem::size_of, ops::Bound};
-
-use bitvec::{bitbox, boxed::BitBox};
+use core::{cmp::Ordering, fmt::Debug, iter, ops::Bound, alloc::{GlobalAlloc, Layout}};
 
 extern "C" {
     fn malloc(size: usize) -> *mut u8;
     fn free(ptr: *mut u8);
 }
+struct Allocator;
+
+#[no_mangle]
+pub static __rust_no_alloc_shim_is_unstable: u8 = 0;
+
+#[no_mangle]
+pub static __rust_alloc_error_handler_should_panic: u8 = 0;
+
+#[no_mangle]
+fn __rust_alloc_error_handler(size: usize, align: usize) -> ! {
+    unsafe { core::hint::unreachable_unchecked() };
+}
+
+unsafe impl GlobalAlloc for Allocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        unsafe { malloc(layout.size()) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        unsafe { free(ptr) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Allocator = Allocator;
 
 macro_rules! load_store {
     ($t: ty, $load:ident, $store:ident) => {
@@ -20,6 +43,11 @@ macro_rules! load_store {
         }
     }
 }
+
+load_store!(u8, load8, store8);
+load_store!(u16, load16, store16);
+load_store!(u32, load32, store32);
+load_store!(u64, load64, store64);
 
 const ADDR_BITS: u32 = 48;
 const ADDR_MASK: u64 = (1 << ADDR_BITS) - 1;
@@ -193,8 +221,3 @@ unsafe fn store<T>(dst: *mut T, src: T) {
 
     core::ptr::write(dst, src)
 }
-
-load_store!(u8, load8, store8);
-load_store!(u16, load16, store16);
-load_store!(u32, load32, store32);
-load_store!(u64, load64, store64);

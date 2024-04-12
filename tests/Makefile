@@ -1,6 +1,7 @@
 CLANG   := clang
 LLC     := llc
 OBJCOPY := llvm-objcopy
+LINK    := llvm-link
 
 BREW := $(shell command -v brew)
 
@@ -14,7 +15,7 @@ endif
 BPFJIT      := ../compile.py
 BPFJIT_DEPS := ../bpf.py ../disasm.py  ../linker.py
 
-CFLAGS  := -O2 -Wall
+CFLAGS  := -O2 -Wall -g
 LDFLAGS :=
 
 BPF_CFLAGS   := -target bpfel -fno-builtin
@@ -47,10 +48,13 @@ test-%: %-native.txt %-jit.txt
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 %-jit.o: %-jit.ll
-	$(CLANG) $(CFLAGS) -Wno-override-module $< -c -o $@
+	$(CLANG) $(CFLAGS) -Wno-override-module -c $< -o $@
 
-%-jit.ll: %-bpf.o $(BPFJIT) $(BPFJIT_DEPS)
-	$(BPFJIT) $< > $@
+%-jit.ll: %-bpf.o shim.ll $(BPFJIT) $(BPFJIT_DEPS)
+	$(BPFJIT) $< | $(LINK) --internalize -S - shim.ll -o $@
+
+shim.ll: shim.c
+	$(CLANG) $(CFLAGS) -emit-llvm -S $< -o $@
 
 %-bpf.ll: %.c
 	$(CLANG) $(CFLAGS) $(BPF_CFLAGS) -S -emit-llvm -c $< -o $@
@@ -60,4 +64,4 @@ test-%: %-native.txt %-jit.txt
 
 .PHONY: clean
 clean:
-	rm -f *.o *.ll *-{jit,native}{,.txt}
+	rm -f *.o *.ll *.txt *-jit *-native

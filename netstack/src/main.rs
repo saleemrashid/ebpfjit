@@ -7,13 +7,11 @@ use smoltcp::{
 use std::os::fd::AsRawFd;
 use std::slice;
 
-//mod netstack;
-
-mod access;
+// mod netstack;
+// mod access;
 
 static mut TAP_INTERFACE: Option<TunTapInterface> = None;
 
-#[link(name = "netstack", kind = "static")]
 extern "C" {
     fn netstack_loop();
 }

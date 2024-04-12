@@ -61,11 +61,10 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
 
 WORKDIR /work
 
-COPY Pipfile Pipfile.lock .
-
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=bind,source=Pipfile,target=Pipfile \
+    --mount=type=bind,source=Pipfile.lock,target=Pipfile.lock \
+    --mount=type=cache,target=/root/.cache/pip \
     python3.12 -m ensurepip && \
     python3.12 -m pip install pipenv && \
-    pipenv install && \
-    rm Pipfile Pipfile.lock
+    pipenv install
 

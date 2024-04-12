@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from typing import Iterator, Union
 
-from collections.abc import Buffer
 from elftools.elf.elffile import ELFFile
 from llvmlite import ir  # type: ignore
 
@@ -35,8 +34,8 @@ class Compiler(object):
         self.unvisited_blocks: set[int] = set()
         self.sections: dict[SectionId, ir.Value] = {}
 
-        self.load: dict[ir.Type, ir.Function] = {}
-        self.store: dict[ir.Type, ir.Function] = {}
+        self.load_funcs: dict[ir.Type, ir.Function] = {}
+        self.store_funcs: dict[ir.Type, ir.Function] = {}
 
     @staticmethod
     def _args_regs() -> Iterator[bpf.Reg]:
@@ -71,7 +70,7 @@ class Compiler(object):
         typs = []
         for item in elements:
             match item:
-                case Buffer():
+                case bytes() | bytearray():
                     typs.append(ir.ArrayType(I8, len(item)))
                 case (_, _):
                     typs.append(I64)
@@ -88,7 +87,7 @@ class Compiler(object):
         elems = []
         for item in elements:
             match item:
-                case Buffer():
+                case bytes() | bytearray():
                     elems.append(ir.Constant(ir.ArrayType(I8, len(item)), item))
                 case (symbol_id, offset):
                     elems.append(self.symbols[symbol_id].ptrtoint(I64).add(I64(offset)))
@@ -98,17 +97,25 @@ class Compiler(object):
         variable.initializer = value
 
     def allow_region(self, start: ir.Value, end: ir.Value) -> ir.Value:
-        return self.builder.call(self.func_allow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
+        # return self.builder.call(self.func_allow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
+        pass
 
     def unallow_region(self, start: ir.Value, end: ir.Value) -> ir.Value:
-        return self.builder.call(self.func_unallow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
+        # return self.builder.call(self.func_unallow_region, (self.builder.ptrtoint(start, I64), self.builder.ptrtoint(end, I64)))
+        pass
+
+    def load_mem(self, src: ir.Value) -> ir.Value:
+        return self.builder.call(self.load_funcs[src.type.pointee], (src,))
+
+    def store_mem(self, dst: ir.Value, src: ir.Value) -> ir.Value:
+        return self.builder.call(self.store_funcs[dst.type.pointee], (dst, src))
 
     def extern_function(self, name: str, type: ir.FunctionType) -> ir.Function:
-        self.declare_function(SymbolId(name, False, None), type)
+        return self.declare_function(SymbolId(name, False, None), type)
 
     def declare_function(
         self, symbol: SymbolId, type: ir.FunctionType = BPF_FUNC_TYPE
-    ) -> None:
+    ) -> ir.Function:
         # TODO(saleem): deduplicate this with declare_data
         if symbol.file_idx is None:
             name = symbol.name
@@ -120,6 +127,7 @@ class Compiler(object):
         func = ir.Function(self.module, type, name)
         func.linkage = linkage
         self.symbols[symbol] = func
+        return func
 
     def compile_function(
         self, symbol_id: SymbolId, symbol: Symbol, text: list[bpf.Instruction[SymbolId]]
@@ -467,7 +475,7 @@ class Compiler(object):
                         self.builder.add(self.load_reg(src_reg), I64(offset)),
                         size_type.as_pointer(),
                     )
-                    result = self.builder.call(self.load[size_type], (src_ptr,))
+                    result = self.load_mem(src_ptr)
 
                     match opcode.mode:
                         case bpf.Mode.MEM:
@@ -491,7 +499,7 @@ class Compiler(object):
                         self.builder.add(self.load_reg(dst_reg), I64(offset)),
                         size_type.as_pointer(),
                     )
-                    self.builder.call(self.store[size_type], (dst_ptr, src))
+                    self.store_mem(dst_ptr, src)
 
             case _:
                 raise NotImplementedError(f"{ins!r}")
@@ -512,11 +520,11 @@ if __name__ == "__main__":
     compiler = Compiler()
 
     for ty in (I8, I16, I32, I64):
-        compiler.load[ty] = compiler.extern_function(
-            f"load{ty.width}", ir.FunctionType(ty, (ty.as_pointer(),))
+        compiler.load_funcs[ty] = compiler.extern_function(
+            f"shim_load{ty.width}", ir.FunctionType(ty, (ty.as_pointer(),))
         )
-        compiler.store[ty] = compiler.extern_function(
-            f"store{ty.width}", ir.FunctionType(ir.VoidType(), (ty.as_pointer(), ty))
+        compiler.store_funcs[ty] = compiler.extern_function(
+            f"shim_store{ty.width}", ir.FunctionType(ir.VoidType(), (ty.as_pointer(), ty))
         )
 
     # TODO(saleem): implement helper functions
@@ -569,5 +577,10 @@ if __name__ == "__main__":
         if section == SectionId.Text:
             continue
         compiler.define_section(section, struct)
+
+    for section_id, section in compiler.sections.items():
+        s = f"shim_{section_id.name.lower()}"
+        GlobalAlias(compiler.module, section.gep([I64(0)]), f"{s}_start")
+        GlobalAlias(compiler.module, section.gep([I64(1)]), f"{s}_end")
 
     print(compiler.module)
