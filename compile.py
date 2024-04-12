@@ -138,7 +138,7 @@ class Compiler(object):
 
         # Prelude
         self.builder = ir.IRBuilder(func.append_basic_block("entry"))
-        (stack_begin, stack_end) = self._alloc_stack(self.builder, BPF_STACK_SIZE)
+        (stack_begin, stack_end) = self._alloc_stack(BPF_STACK_SIZE)
 
         self.allow_region(stack_begin, stack_end)
         for value in self.symbols.values():
@@ -203,6 +203,7 @@ class Compiler(object):
 
         # Epilogue
         self.builder.position_at_end(self.exit_block)
+        self._dealloc_stack(BPF_STACK_SIZE)
 
         self.unallow_region(stack_begin, stack_end)
         for value in self.symbols.values():
@@ -214,15 +215,13 @@ class Compiler(object):
 
         self.builder.ret(self.load_reg(bpf.Reg.R0))
 
-    @staticmethod
-    def _alloc_stack(builder: ir.IRBuilder, size: int) -> tuple[ir.Value, ir.Value]:
-        if size % 8 != 0:
-            raise ValueError("size must be a multiple of 8")
-        count = size // 8
-
-        stack_begin = builder.alloca(I64, count)
-        stack_end = builder.gep(stack_begin, (I64(count),))
+    def _alloc_stack(self, size: int) -> tuple[ir.Value, ir.Value]:
+        stack_begin = self.builder.call(self.stack_alloc_func, (I64(size),))
+        stack_end = self.builder.gep(stack_begin, (I64(size),))
         return (stack_begin, stack_end)
+
+    def _dealloc_stack(self, size: int):
+        self.builder.call(self.stack_dealloc_func, (I64(size),))
 
     @staticmethod
     def _alloc_reg(builder: ir.IRBuilder) -> dict[bpf.Reg, ir.Value]:
@@ -518,6 +517,9 @@ if __name__ == "__main__":
             linker.add_elf(elf)
 
     compiler = Compiler()
+
+    compiler.stack_alloc_func = compiler.extern_function("shim_stack_alloc", ir.FunctionType(I8.as_pointer(), (I64,)))
+    compiler.stack_dealloc_func = compiler.extern_function("shim_stack_dealloc", ir.FunctionType(ir.VoidType(), (I64,)))
 
     for ty in (I8, I16, I32, I64):
         compiler.load_funcs[ty] = compiler.extern_function(

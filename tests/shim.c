@@ -4,9 +4,58 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 
-extern inline void allow_region(void) {}
-extern inline void unallow_region(void) {}
+static __attribute__((cold)) __attribute__((noreturn))
+__attribute__((format(printf, 1, 2))) void
+panic(const char *format, ...);
+
+/* Allocator implementation */
+
+/* 2GB should be enough :) */
+#define STACK_SIZE (1024 * 1024 * 1024)
+
+void *stack_start = NULL;
+void *stack_end = NULL;
+void *stack_top = NULL;
+
+static inline void stack_init(void) {
+    if (stack_start != NULL) {
+        return;
+    }
+    stack_start = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (stack_start == NULL) {
+        panic("could not allocate stack");
+    }
+    stack_end = stack_start + STACK_SIZE;
+    stack_top = stack_end;
+}
+
+void *shim_stack_alloc(size_t size) {
+    stack_init();
+
+    uintptr_t new_top = (uintptr_t) stack_top - size;
+    if (new_top < (uintptr_t) stack_start || new_top > (uintptr_t) stack_end) {
+        fprintf(stderr, "start:%p top:%p end:%p\n", stack_start, stack_top, stack_end);
+        panic("could not alloc %zu bytes on the stack", size);
+    }
+
+    stack_top = (void *) new_top;
+    return stack_top;
+}
+
+void shim_stack_dealloc(size_t size) {
+    stack_init();
+
+    uintptr_t new_top = (uintptr_t) stack_top + size;
+    if (new_top < (uintptr_t) stack_start || new_top > (uintptr_t) stack_end) {
+        panic("could not dealloc %zu bytes on the stack", size);
+    }
+
+    stack_top = (void *) new_top;
+}
+
+/* Load/store functions */
 
 enum mode { READ, WRITE };
 
@@ -20,10 +69,6 @@ static inline const char *modestr(enum mode mode) {
 }
 
 static inline void access(uintptr_t addr, size_t size, enum mode mode);
-
-static __attribute__((cold)) __attribute__((noreturn))
-__attribute__((format(printf, 1, 2))) void
-panic(const char *format, ...);
 
 #define _DEFINE_LOAD(T, F)        \
   T F(const T *src) {             \
@@ -57,6 +102,9 @@ static inline bool check(uintptr_t addr, void *start, void *end) {
 }
 
 static inline void access(uintptr_t addr, size_t size, enum mode mode) {
+    if (CHECK(addr, stack)) {
+        return;
+    }
     if (CHECK(addr, shim_data)) {
         return;
     }
@@ -66,7 +114,7 @@ static inline void access(uintptr_t addr, size_t size, enum mode mode) {
         }
         return;
     }
-    /* panic("cannot %s at 0x%zu of size %zu", modestr(mode), addr, size); */
+    panic("cannot %s at 0x%zu of size %zu", modestr(mode), addr, size);
 }
 
 static void panic(const char *format, ...) {
