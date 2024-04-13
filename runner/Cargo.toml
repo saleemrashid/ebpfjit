@@ -1,5 +1,5 @@
 [package]
-name = "netstack"
+name = "runner"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,6 +10,12 @@ bitvec = { version = "1.0.1", default-features = false, features = ["alloc"] }
 env_logger = "0.11.3"
 log = "0.4.21"
 splay = "0.1.8"
+
+netstack = { path = "../modules/netstack", optional = true}
+
+[features]
+default = []
+native = ["netstack"]
 
 [dependencies.smoltcp]
 git = "https://github.com/smoltcp-rs/smoltcp.git"

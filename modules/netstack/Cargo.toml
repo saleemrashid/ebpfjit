@@ -1,0 +1,8 @@
+[package]
+name = "netstack"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustbpf = { path = "../rustbpf" }
+smoltcp = { workspace = true }

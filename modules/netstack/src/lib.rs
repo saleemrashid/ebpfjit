@@ -1,6 +1,4 @@
-#![no_std]
-#![no_main]
-extern crate alloc;
+#![cfg_attr(target_arch = "bpf", no_std)]
 
 use rustbpf::prelude::*;
 
@@ -15,6 +13,11 @@ use smoltcp::{
         Ipv4Address, Ipv4Packet, TcpPacket,
     },
 };
+
+#[cfg(target_arch = "bpf")]
+const ARCH: &'static str = "eBPF";
+#[cfg(not(target_arch = "bpf"))]
+const ARCH: &'static str = std::env::consts::ARCH;
 
 extern "C" {
     fn tap_rx_wait(micros: u64, ...);
@@ -50,7 +53,7 @@ fn parse_tcp_syn(buf: &mut [u8]) -> Option<IpEndpoint> {
 
 #[no_mangle]
 extern "C" fn netstack_loop() {
-    println!("ready from eBPF!");
+    println!("Ready from {}!", ARCH);
 
     let mut device = Phy::<1536>::new();
     let config = Config::new(EthernetAddress([0xde, 0xad, 0xbe, 0xef, 0x12, 0x34]).into());
@@ -95,7 +98,8 @@ extern "C" fn netstack_loop() {
                 while sock.can_recv() {
                     sock.recv(|buf| (buf.len(), ())).unwrap();
                 }
-                sock.send_slice(b"HTTP/1.1 200 OK\r\n\r\nHello\n").unwrap();
+                let response = format!("HTTP/1.1 200 OK\r\n\r\nHello from {}\n", ARCH);
+                sock.send_slice(response.as_bytes()).unwrap();
                 sock.close();
             });
 

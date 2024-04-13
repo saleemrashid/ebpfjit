@@ -1,9 +1,3 @@
-#![feature(lang_items)]
-#![feature(panic_info_message)]
-#![no_std]
-
-extern crate alloc;
-
 use linked_list_allocator::Heap;
 
 use core::{
@@ -48,7 +42,7 @@ pub struct FdWriter(i32);
 
 impl Write for FdWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        unsafe { crate::write(self.0, s.as_ptr(), s.len()) };
+        unsafe { write(self.0, s.as_ptr(), s.len()) };
         Ok(())
     }
 }
@@ -128,5 +122,3 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     loop {}
     unsafe { core::hint::unreachable_unchecked() }
 }
-
-pub mod prelude;

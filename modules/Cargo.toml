@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "rustbpf",
+    "netstack",
+]
+
+[workspace.dependencies.smoltcp]
+path = "vendor/smoltcp"
+default-features = false
+features = ["alloc", "proto-ipv4", "medium-ethernet", "socket-tcp"]

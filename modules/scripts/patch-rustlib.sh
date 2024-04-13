@@ -14,5 +14,6 @@ PATCHES=(
 
 for patch in "${PATCHES[@]}"; do
   # This is terrible, but we can't tell Cargo to find libcore elsewhere
-  patch -d "$(rustc --print sysroot)/lib/rustlib/src/rust" --strip=1 < "$patch"
+  patch -R -d "$(rustc --print sysroot)/lib/rustlib/src/rust" --strip=1 < "$patch" || true
+  patch -N -d "$(rustc --print sysroot)/lib/rustlib/src/rust" --strip=1 < "$patch"
 done

@@ -3,14 +3,13 @@ set -euo pipefail
 
 BPF_STACK_SIZE=131072
 
-TARGETS=("$@")
-
-if [[ "${#TARGETS[@]}" -eq 0 ]]; then
-  TARGETS=($(cargo metadata --format-version 1 --no-deps \
-    | jq -r '.packages[].targets[] | select(.kind | index("bin")) | .name'))
-fi
+PACKAGES=(
+  netstack
+)
 
 CARGOFLAGS=(
+  --target bpfel-unknown-none
+  -Z build-std=core,alloc
   --message-format json-render-diagnostics
   --release
 )
@@ -34,10 +33,11 @@ scripts/vendor-smoltcp.sh
 
 clang -O3 -S -emit-llvm ../tests/shim.c -o shim.ll
 
-for target in "${TARGETS[@]}"; do
-  output="$(cargo rustc --bin "$target" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \
-    | jq -s -r 'map(select(.reason == "compiler-artifact") | .executable) | last')"
-  name="target/$(basename "$output")"
+for package in "${PACKAGES[@]}"; do
+  output="$(cargo rustc -p "$package" --bin "$package" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \
+    | jq -e -s -r 'map(select(.reason == "compiler-artifact") | .executable) | last')"
+  name="target/${package}"
+  libname="target/lib${package}.a"
 
   # Some hacks to workaround rustc and LLVM bugs
   sed -E \
@@ -51,9 +51,8 @@ for target in "${TARGETS[@]}"; do
     -e 's/^define weak hidden noundef /define internal noundef /g' \
     "$output" > "$name-bpf.ll"
   llc -O=3 -march=bpfel -mcpu=v4 -filetype=obj -bpf-stack-size="$BPF_STACK_SIZE" "$name-bpf.ll" -o "$name-bpf.o"
-  ../compile.py "$name-bpf.o" | llvm-link -S - shim.ll -o "$name.ll"
-  clang -O3 -c "$name.ll" -o "$name.o"
-  libname="${name%/*}/lib${name##*/}.a"
+  ../compile.py "$name-bpf.o" | llvm-link --internalize - shim.ll -o "$name.bc"
+  clang -O3 -c "$name.bc" -o "$name.o"
   rm -f "$libname"
   ar -rcD "$libname" "$name.o"
 done
