@@ -9,4 +9,11 @@ else
   WORKDIR=""
 fi
 
-exec docker run --privileged --rm -it -v "$BASEDIR:/work" -w "/work/$WORKDIR" ebpfjit "$@"
+exec docker run \
+  --device /dev/net/tun \
+  --cap-add NET_ADMIN \
+  --rm -it \
+  -v ebpfjit-cargo-registry:/root/.cargo/registry \
+  -v "$BASEDIR:/work" \
+  -w "/work/$WORKDIR" \
+  ebpfjit "$@"

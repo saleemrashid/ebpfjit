@@ -1,70 +1,65 @@
-ARG RUST_TOOLCHAIN=nightly-2024-03-09
-
 FROM ubuntu:22.04 as base
 
-RUN --mount=type=cache,target=/var/cache/apt/archives \
-    rm -f /etc/apt/apt.conf.d/docker-clean && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        curl \
-        software-properties-common && \
-    rm -rf /var/apt/lists/*
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-FROM base as rust
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked <<EOT
+rm -f /etc/apt/apt.conf.d/docker-clean
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  ca-certificates \
+  curl \
+  software-properties-common
+apt-add-repository ppa:deadsnakes/ppa
+. /etc/os-release
+curl -LSf "https://apt.llvm.org/llvm-snapshot.gpg.key" -o /etc/apt/keyrings/apt.llvm.org.asc
+echo > /etc/apt/sources.list.d/apt.llvm.org.list \
+  "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/${UBUNTU_CODENAME}/ llvm-toolchain-${UBUNTU_CODENAME}-18 main"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  build-essential \
+  curl \
+  git \
+  jq \
+  clang-18 \
+  llvm-18-dev \
+  libclang-18-dev \
+  libpolly-18-dev \
+  python3.12-venv \
+  libz-dev \
+  libzstd-dev
+EOT
 
-ENV RUSTUP_HOME=/opt/rustup
-ENV CARGO_HOME=/opt/cargo
-ENV PATH=/opt/cargo/bin:"$PATH"
+ENV PATH="/usr/lib/llvm-18/bin:$PATH"
+WORKDIR /work
 
-ARG RUST_TOOLCHAIN
-ENV RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+FROM base as python
 
-RUN curl --proto "=https" --tlsv1.3 -Sf https://sh.rustup.rs \
-     | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path && \
-    rustup component add rust-src
+RUN --mount=type=cache,target=/root/.cache/pip <<EOT
+ln -s "$(which python3.12)" /usr/local/bin/python3
+python3 -m ensurepip --altinstall
+python3 -m pip install pipenv
+EOT
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,source=Pipfile,target=Pipfile \
+    --mount=type=bind,source=Pipfile.lock,target=Pipfile.lock <<EOT
+python3 -m pipenv install --system --deploy  
+EOT
 
 FROM base
 
-RUN --mount=type=cache,target=/var/cache/apt/archives \
-    curl -Sf https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/keyrings/apt.llvm.org.asc && \
-    . /etc/os-release && \
-    echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/$UBUNTU_CODENAME/ llvm-toolchain-$UBUNTU_CODENAME-18 main" \
-        > /etc/apt/sources.list.d/apt.llvm.org.list && \
-    apt-add-repository ppa:deadsnakes/ppa && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        build-essential \
-        git \
-        jq \
-        clang-18 \
-        llvm-18-dev \
-        libclang-18-dev \
-        libpolly-18-dev \
-        python3.12 \
-        python3.12-venv \
-        libz-dev \
-        libzstd-dev && \
-    rm -rf /var/apt/lists/*
+ENV RUSTUP_TOOLCHAIN=nightly-2024-03-09
+ENV PATH="/root/.cargo/bin:$PATH"
 
-ENV RUSTUP_HOME=/opt/rustup
-ENV CARGO_HOME=/opt/cargo
-ENV PATH=/opt/cargo/bin:/usr/lib/llvm-18/bin:"$PATH"
+RUN <<EOT
+curl --proto "=https" --tlsv1.3 -Sf https://sh.rustup.rs \
+  | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+rustup component add rust-src
+cargo install bpf-linker --no-default-features
+EOT
 
-ARG RUST_TOOLCHAIN
-ENV RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+VOLUME ["/root/.cargo/registry"]
 
-COPY --from=rust /opt/rustup/ /opt/rustup/
-COPY --from=rust /opt/cargo/ /opt/cargo/
-
-RUN --mount=type=cache,target=/opt/cargo/registry \
-    cargo install bpf-linker --no-default-features
-
-WORKDIR /work
-
-RUN --mount=type=bind,source=Pipfile,target=Pipfile \
-    --mount=type=bind,source=Pipfile.lock,target=Pipfile.lock \
-    --mount=type=cache,target=/root/.cache/pip \
-    python3.12 -m ensurepip && \
-    python3.12 -m pip install pipenv && \
-    pipenv install
-
+COPY --link --from=python /usr/local/bin /usr/local/bin
+COPY --link --from=python /usr/local/lib/python3.12 /usr/local/lib/python3.12
