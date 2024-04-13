@@ -520,6 +520,8 @@ if __name__ == "__main__":
 
     compiler.stack_alloc_func = compiler.extern_function("shim_stack_alloc", ir.FunctionType(I8.as_pointer(), (I64,)))
     compiler.stack_dealloc_func = compiler.extern_function("shim_stack_dealloc", ir.FunctionType(ir.VoidType(), (I64,)))
+    compiler.extern_function("shim_heap_start", ir.FunctionType(I64, ()))
+    compiler.extern_function("shim_heap_size", ir.FunctionType(I64, ()))
 
     for ty in (I8, I16, I32, I64):
         compiler.load_funcs[ty] = compiler.extern_function(

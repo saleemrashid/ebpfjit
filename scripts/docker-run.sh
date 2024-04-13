@@ -9,4 +9,4 @@ else
   WORKDIR=""
 fi
 
-exec docker run --rm -it -v "$BASEDIR:/work" -w "/work/$WORKDIR" ebpfjit "$@"
+exec docker run --privileged --rm -it -v "$BASEDIR:/work" -w "/work/$WORKDIR" ebpfjit "$@"

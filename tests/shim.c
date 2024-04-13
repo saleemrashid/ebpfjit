@@ -12,7 +12,7 @@ panic(const char *format, ...);
 
 /* Allocator implementation */
 
-/* 2GB should be enough :) */
+/* 1GB should be enough :) */
 #define STACK_SIZE (1024 * 1024 * 1024)
 
 void *stack_start = NULL;
@@ -53,6 +53,33 @@ void shim_stack_dealloc(size_t size) {
     }
 
     stack_top = (void *) new_top;
+}
+
+/* 1GB should be enough :) */
+#define HEAP_SIZE (1024 * 1024 * 1024)
+
+void *heap_start = NULL;
+void *heap_end = NULL;
+
+static inline void heap_init(void) {
+    if (heap_start != NULL) {
+        return;
+    }
+    heap_start = mmap(NULL, HEAP_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (heap_start == NULL) {
+        panic("could not allocate heap");
+    }
+    heap_end = stack_start + HEAP_SIZE;
+}
+
+void *shim_heap_start(void) {
+    heap_init();
+    return heap_start;
+}
+
+size_t shim_heap_size(void) {
+    heap_init();
+    return HEAP_SIZE;
 }
 
 /* Load/store functions */
@@ -103,6 +130,9 @@ static inline bool check(uintptr_t addr, void *start, void *end) {
 
 static inline void access(uintptr_t addr, size_t size, enum mode mode) {
     if (CHECK(addr, stack)) {
+        return;
+    }
+    if (CHECK(addr, heap)) {
         return;
     }
     if (CHECK(addr, shim_data)) {

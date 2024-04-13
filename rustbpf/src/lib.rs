@@ -4,28 +4,39 @@
 
 extern crate alloc;
 
+use linked_list_allocator::Heap;
+
 use core::{
     alloc::{GlobalAlloc, Layout},
     fmt::{Debug, Write},
+    ptr,
 };
 
 extern "C" {
     // XXX(saleem): for some reason, Rust drops the arguments when it does fastcc?
     // Use variadics to force it to keep them.
-    fn my_malloc(size: usize, ...) -> *mut u8;
-    fn my_free(ptr: *mut u8, ...);
+    fn shim_heap_start() -> *mut u8;
+    fn shim_heap_size() -> usize;
     fn write(fd: i32, buf: *const u8, count: usize, ...);
+}
+
+static mut HEAP: Option<Heap> = None;
+
+unsafe fn heap() -> &'static mut Heap {
+    HEAP.get_or_insert_with(|| {
+        unsafe { Heap::new(shim_heap_start(), shim_heap_size()) }
+    })
 }
 
 struct Allocator;
 
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { my_malloc(layout.size()) }
+        unsafe { heap().allocate_first_fit(layout) }.unwrap().as_ptr()
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        unsafe { my_free(ptr) }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { heap().deallocate(ptr::NonNull::new(ptr).unwrap(), layout) }
     }
 }
 

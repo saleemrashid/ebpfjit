@@ -7,7 +7,8 @@ use smoltcp::{
 use std::os::fd::AsRawFd;
 use std::slice;
 
-// mod netstack;
+mod netstack;
+
 // mod access;
 
 static mut TAP_INTERFACE: Option<TunTapInterface> = None;

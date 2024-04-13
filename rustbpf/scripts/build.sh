@@ -32,6 +32,8 @@ RUSTCFLAGS+=("$@")
 scripts/patch-rustlib.sh
 scripts/vendor-smoltcp.sh
 
+clang -O3 -S -emit-llvm ../tests/shim.c -o shim.ll
+
 for target in "${TARGETS[@]}"; do
   output="$(cargo rustc --bin "$target" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \
     | jq -s -r 'map(select(.reason == "compiler-artifact") | .executable) | last')"
@@ -49,6 +51,9 @@ for target in "${TARGETS[@]}"; do
     -e 's/^define weak hidden noundef /define internal noundef /g' \
     "$output" > "$name-bpf.ll"
   llc -O=3 -march=bpfel -mcpu=v4 -filetype=obj -bpf-stack-size="$BPF_STACK_SIZE" "$name-bpf.ll" -o "$name-bpf.o"
-  ../compile.py "$name-bpf.o" > "$name.ll"
+  ../compile.py "$name-bpf.o" | llvm-link -S - shim.ll -o "$name.ll"
   clang -O3 -c "$name.ll" -o "$name.o"
+  libname="${name%/*}/lib${name##*/}.a"
+  rm -f "$libname"
+  ar -rcD "$libname" "$name.o"
 done
