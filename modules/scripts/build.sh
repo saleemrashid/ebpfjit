@@ -31,7 +31,11 @@ RUSTCFLAGS+=("$@")
 scripts/patch-rustlib.sh
 scripts/vendor-smoltcp.sh
 
-clang -O3 -S -emit-llvm ../tests/shim.c -o shim.ll
+if [[ "${SHIM_UNCHECKED-}" = "1" ]]; then
+  clang -O3 -S -emit-llvm -DSHIM_UNCHECKED ../tests/shim.c -o shim.ll
+else
+  clang -O3 -S -emit-llvm ../tests/shim.c -o shim.ll
+fi
 
 for package in "${PACKAGES[@]}"; do
   output="$(cargo rustc -p "$package" --bin "$package" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \

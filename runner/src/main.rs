@@ -1,14 +1,16 @@
-use std::error::Error;
-
 use smoltcp::{
     phy::{self, Device, Medium, RxToken, TunTapInterface, TxToken},
     time::{Duration, Instant},
 };
+use std::env;
+use std::error::Error;
 use std::os::fd::AsRawFd;
+use std::process;
 use std::slice;
 
+#[allow(unused_imports)]
 #[cfg(feature = "native")]
-pub use netstack::*;
+use netstack::*;
 
 static mut TAP_INTERFACE: Option<TunTapInterface> = None;
 
@@ -16,11 +18,22 @@ extern "C" {
     fn netstack_loop();
 }
 
+const USAGE: &'static str = "usage: ./runner INTERFACE\n";
+
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
+    let args = env::args().collect::<Vec<_>>();
+
+    if args.len() != 2 {
+        eprint!("{}", USAGE);
+        process::exit(1);
+    }
+
+    let interface = &args[1];
+
     unsafe {
-        TAP_INTERFACE = Some(TunTapInterface::new("tap0", Medium::Ethernet)?);
+        TAP_INTERFACE = Some(TunTapInterface::new(interface, Medium::Ethernet)?);
     }
 
     unsafe {

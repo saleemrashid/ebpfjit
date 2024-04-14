@@ -1,5 +1,8 @@
-*
-!Pipfile
-!Pipfile.lock
-!*/Cargo.toml
-!*/Cargo.lock
+**/__pycache__/
+**/.mypy_cache/
+**/*.bc
+**/*.bin
+**/*.ll
+**/*.o
+**/a.out
+**/target/

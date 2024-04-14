@@ -129,6 +129,7 @@ static inline bool check(uintptr_t addr, void *start, void *end) {
 }
 
 static inline void access(uintptr_t addr, size_t size, enum mode mode) {
+#ifndef SHIM_UNCHECKED
     if (CHECK(addr, stack)) {
         return;
     }
@@ -145,6 +146,7 @@ static inline void access(uintptr_t addr, size_t size, enum mode mode) {
         return;
     }
     panic("cannot %s at 0x%zu of size %zu", modestr(mode), addr, size);
+#endif
 }
 
 static void panic(const char *format, ...) {
