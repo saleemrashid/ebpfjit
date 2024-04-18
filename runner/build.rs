@@ -11,6 +11,7 @@ fn main() {
 
         println!("cargo:rustc-link-search=native={}", target.display());
         for package in PACKAGES {
+            println!("cargo:rerun-if-changed={}/lib{package}.a", target.display());
             println!("cargo:rustc-link-lib=static={}", package);
         }
     }

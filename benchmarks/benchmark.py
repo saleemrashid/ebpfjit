@@ -51,11 +51,13 @@ def run(mode: Mode, dir: Path) -> None:
             raise Exception(f"unexpected response: {response!r}")
 
         for requests, concurrency in (
-            (200, 1),
-            (500, 200),
-            (1000, 1000),
-            (10000, 1000),
+            (2500, 500),
+            (2500, 1000),
+            (5000, 500),
+            (5000, 1000),
             (5000, 5000),
+            (10000, 500),
+            (10000, 1000),
             (10000, 5000),
         ):
             apache_bench(runner, dir, requests, concurrency)
