@@ -100,6 +100,22 @@ cd runner
 cargo build --release
 EOF
 
+FROM golang:1.21-alpine AS build-go-gvisor
+
+RUN --mount=type=cache,target=/go/pkg/mod/,sharing=locked \
+    --mount=type=bind,source=misc/gvisor-netstack/go.mod,target=runner/go.mod \
+    --mount=type=bind,source=misc/gvisor-netstack/go.sum,target=runner/go.sum <<EOF
+cd runner
+go mod download -x
+EOF
+
+COPY misc/gvisor-netstack runner
+
+RUN --mount=type=cache,target=/go/pkg/mod/,sharing=locked <<EOF
+cd runner
+go build -o runner
+EOF
+
 FROM base AS bench
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -127,5 +143,6 @@ COPY --link benchmarks benchmarks
 COPY --link --from=build-native /work/runner/target/release/runner runner-native
 COPY --link --from=build-ebpf /work/runner/target/release/runner runner-ebpf
 COPY --link --from=build-ebpf-unchecked /work/runner/target/release/runner runner-ebpf-unchecked
+COPY --link --from=build-go-gvisor /go/runner/runner runner-go-gvisor
 
 CMD ["bash"]

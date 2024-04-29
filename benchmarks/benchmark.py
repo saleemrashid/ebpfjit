@@ -14,12 +14,14 @@ class Mode(enum.Enum):
     NATIVE = "native"
     EBPF = "ebpf"
     EBPF_UNCHECKED = "ebpf-unchecked"
+    GO_GVISOR = "go-gvisor"
 
 
 RESPONSES: Mapping[Mode, re.Pattern[bytes]] = {
     Mode.NATIVE: re.compile(rb"\AHello from (aarch64|x86_64)\Z"),
     Mode.EBPF: re.compile(rb"\AHello from eBPF\Z"),
     Mode.EBPF_UNCHECKED: re.compile(rb"\AHello from eBPF\Z"),
+    Mode.GO_GVISOR: re.compile(rb"\AHello from Go\Z"),
 }
 
 
@@ -33,6 +35,7 @@ def apache_bench(runner: Runner, dir: Path, requests: int, concurrency: int) -> 
                 str(requests),
                 "-c",
                 str(concurrency),
+                "-r",
                 "-e",
                 dir / f"{stem}.csv",
                 "-g",
