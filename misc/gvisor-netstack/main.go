@@ -161,5 +161,5 @@ func serve(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\nHello from Go\n"))
+	conn.Write([]byte("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nHello from Go\n"))
 }

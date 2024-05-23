@@ -108,7 +108,7 @@ extern "C" fn netstack_loop() {
                 while sock.can_recv() {
                     sock.recv(|buf| (buf.len(), ())).unwrap();
                 }
-                let response = format!("HTTP/1.1 200 OK\r\n\r\nHello from {}\n", ARCH);
+                let response = format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nHello from {}\n", ARCH);
                 sock.send_slice(response.as_bytes()).unwrap();
                 sock.close();
             });
