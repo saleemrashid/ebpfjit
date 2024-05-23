@@ -1,7 +1,7 @@
 import base64
 import hashlib
 import subprocess
-from typing import Self
+from typing import Iterable, Self
 
 from netaddr import IPNetwork
 
@@ -18,11 +18,11 @@ def tap_name(prefix: IPNetwork) -> str:
 
 
 class Runner(object):
-    def __init__(self, executable: str):
+    def __init__(self, args: Iterable[str]):
         self.prefix, self.addr = ip.random_point_to_point()
         self.tap_name = tap_name(self.prefix)
         self.process = subprocess.Popen(
-            [executable, self.tap_name], stdout=subprocess.DEVNULL
+            [*args, self.tap_name], stdout=subprocess.DEVNULL
         )
 
         ip.wait_for_interface(self.tap_name, TIMEOUT)

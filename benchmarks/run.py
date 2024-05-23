@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-import runner
-import sys
 import os
+import sys
 
-with runner.Runner(sys.argv[1]) as r:
+import runner
+
+with runner.Runner([sys.argv[1]]) as r:
     print(r.url)
     os.system("bash")

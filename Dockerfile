@@ -126,6 +126,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   apache2-utils \
   curl \
   iproute2 \
+  linux-perf \
   magic-wormhole
 pip3 install pipenv
 EOF

@@ -5,7 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 from subprocess import check_call, check_output
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from runner import Runner
 
@@ -45,11 +45,9 @@ def apache_bench(runner: Runner, dir: Path, requests: int, concurrency: int) -> 
         )
 
 
-def run(mode: Mode, dir: Path) -> None:
-    with Runner(f"./runner-{mode.value}") as runner:
-        response = (
-            check_output(["curl", "-sSf", f"{runner.url}/health"]).strip()
-        )
+def run(mode: Mode, dir: Path, wrapper: Iterable[str] = ()) -> None:
+    with Runner([*wrapper, f"./runner-{mode.value}"]) as runner:
+        response = check_output(["curl", "-sSf", f"{runner.url}/health"]).strip()
         if not RESPONSES[mode].match(response):
             raise Exception(f"unexpected response: {response!r}")
 
@@ -70,12 +68,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", nargs="+", type=Mode)
     parser.add_argument("-o", "--output-directory", type=Path, required=True)
+    parser.add_argument("-p", "--perf", action="store_true")
     args = parser.parse_args()
+
+    if args.perf:
+        wrapper = ["perf", "record", "-g", "-F", "999"]
+    else:
+        wrapper = []
 
     for mode in args.mode:
         dir = args.output_directory / mode.value
         dir.mkdir(parents=True, exist_ok=False)
-        run(mode, dir)
+        run(mode, dir, wrapper)
 
 
 if __name__ == "__main__":
