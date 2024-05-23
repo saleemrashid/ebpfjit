@@ -79,6 +79,7 @@ class Compiler(object):
         name = f"section .{section.name.lower()}"
         variable = ir.GlobalVariable(self.module, ir.LiteralStructType(typs), name)
         variable.linkage = "private"
+        variable.section = f".data.shim_{section.name.lower()}"
         self.sections[section] = variable
 
     def define_section(

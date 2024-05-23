@@ -12,10 +12,16 @@ log = "0.4.21"
 splay = "0.1.8"
 
 netstack = { path = "../modules/netstack", optional = true}
+wasmtime = { version = "21.0.0", optional = true }
 
 [features]
 default = []
 native = ["netstack"]
+unchecked = []
+4gb = []
+
+[profile.release]
+debug = 1
 
 [dependencies.smoltcp]
 git = "https://github.com/smoltcp-rs/smoltcp.git"

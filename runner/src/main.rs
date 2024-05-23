@@ -4,9 +4,13 @@ use smoltcp::{
 };
 use std::env;
 use std::error::Error;
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::process;
 use std::slice;
+
+#[cfg(feature = "wasmtime")]
+use wasmtime::*;
 
 #[allow(unused_imports)]
 #[cfg(feature = "native")]
@@ -14,6 +18,7 @@ use netstack::*;
 
 static mut TAP_INTERFACE: Option<TunTapInterface> = None;
 
+#[cfg(not(feature = "wasmtime"))]
 extern "C" {
     fn netstack_loop();
 }
@@ -36,9 +41,85 @@ fn main() -> Result<(), Box<dyn Error>> {
         TAP_INTERFACE = Some(TunTapInterface::new(interface, Medium::Ethernet)?);
     }
 
+    run_loop()
+}
+
+#[cfg(not(feature = "wasmtime"))]
+fn run_loop() -> Result<(), Box<dyn Error>> {
     unsafe {
         netstack_loop();
     }
+    Ok(())
+}
+
+#[cfg(feature = "wasmtime")]
+fn get_memory<'a, T>(caller: &mut Caller<'a, T>) -> Option<Memory> {
+    caller.get_export("memory")?.into_memory()
+}
+
+#[cfg(feature = "wasmtime")]
+fn run_loop() -> Result<(), Box<dyn Error>> {
+    let engine = Engine::new(Config::default().profiler(ProfilingStrategy::PerfMap))?;
+    let module = Module::new(
+        &engine,
+        include_bytes!("../../modules/target/wasm32-unknown-unknown/release/netstack.wasm"),
+    )?;
+
+    let mut linker = Linker::new(&engine);
+    linker.func_wrap("env", "micros", || micros())?;
+    linker.func_wrap("env", "tap_rx_wait", |micros| tap_rx_wait(micros))?;
+    linker.func_wrap(
+        "env",
+        "tap_rx",
+        |mut caller: Caller<'_, _>, addr: u32, len: u32| -> u32 {
+            let memory = get_memory(&mut caller).unwrap();
+
+            unsafe {
+                let ptr = memory.data_ptr(caller).add(addr as usize);
+                tap_rx(ptr, len as usize) as u32
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "env",
+        "tap_tx",
+        |mut caller: Caller<'_, _>, addr: u32, len: u32| {
+            let memory = get_memory(&mut caller).unwrap();
+
+            unsafe {
+                let ptr = memory.data_ptr(caller).add(addr as usize);
+                tap_tx(ptr, len as usize)
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "env",
+        "write",
+        |mut caller: Caller<'_, _>, fd: i32, addr: u32, len: u32| {
+            let memory = get_memory(&mut caller).unwrap();
+
+            let start = addr as usize;
+            let end = start + len as usize;
+            let buf = &memory.data(&caller)[start..end];
+
+            match fd {
+                1 => {
+                    io::stdout().write(buf);
+                }
+                2 => {
+                    io::stderr().write(buf);
+                }
+                _ => {}
+            };
+        },
+    )?;
+
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    let netstack_loop = instance.get_typed_func::<(), ()>(&mut store, "netstack_loop")?;
+    netstack_loop.call(&mut store, ())?;
+
     Ok(())
 }
 

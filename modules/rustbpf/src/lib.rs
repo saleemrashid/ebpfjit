@@ -4,6 +4,9 @@
 
 extern crate alloc;
 
+mod print;
+pub use print::*;
+
 #[cfg(target_arch = "bpf")]
 mod bpf;
 #[cfg(target_arch = "bpf")]

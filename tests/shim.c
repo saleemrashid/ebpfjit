@@ -15,9 +15,9 @@ panic(const char *format, ...);
 /* 1GB should be enough :) */
 #define STACK_SIZE (1024 * 1024 * 1024)
 
-void *stack_start = NULL;
-void *stack_end = NULL;
-void *stack_top = NULL;
+static void *stack_start = NULL;
+static void *stack_end = NULL;
+static void *stack_top = NULL;
 
 static inline void stack_init(void) {
     if (stack_start != NULL) {

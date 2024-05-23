@@ -1,6 +1,7 @@
 #![cfg_attr(target_arch = "bpf", no_std)]
 
 use rustbpf::prelude::*;
+use rustbpf::prelude::println;
 
 use core::num::NonZeroUsize;
 use smoltcp::{
@@ -19,10 +20,19 @@ const ARCH: &'static str = "eBPF";
 #[cfg(not(target_arch = "bpf"))]
 const ARCH: &'static str = std::env::consts::ARCH;
 
+#[cfg(target_arch = "bpf")]
 extern "C" {
     fn tap_rx_wait(micros: u64, ...);
     fn tap_rx(ptr: *mut u8, len: usize, ...) -> usize;
     fn tap_tx(ptr: *const u8, len: usize, ...);
+    fn micros() -> i64;
+}
+
+#[cfg(not(target_arch = "bpf"))]
+extern "C" {
+    fn tap_rx_wait(micros: u64);
+    fn tap_rx(ptr: *mut u8, len: usize) -> usize;
+    fn tap_tx(ptr: *const u8, len: usize);
     fn micros() -> i64;
 }
 

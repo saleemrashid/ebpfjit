@@ -1,6 +1,7 @@
-#![no_std]
+#![cfg_attr(target_arch = "bpf", no_std)]
 
 use rustbpf::prelude::*;
+use rustbpf::prelude::println;
 
 fn main() -> Result<(), httparse::Error> {
     let mut headers = vec![httparse::EMPTY_HEADER; 64];

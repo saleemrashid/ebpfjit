@@ -54,6 +54,7 @@ RUN <<EOF
 curl --proto "=https" --tlsv1.3 -Sf https://sh.rustup.rs \
   | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
 rustup component add rust-src
+rustup target add wasm32-unknown-unknown
 cargo install bpf-linker --no-default-features
 EOF
 
@@ -63,6 +64,18 @@ COPY --link --from=pipenv /usr/local/bin /usr/local/bin
 COPY --link --from=pipenv /usr/local/lib/python3.12 /usr/local/lib/python3.12
 
 # Benchmark images
+
+FROM build AS build-wasmtime
+
+COPY modules modules
+COPY runner runner
+
+RUN <<EOF
+cd modules
+cargo build --target wasm32-unknown-unknown --release
+cd ../runner
+cargo build --release --features wasmtime
+EOF
 
 FROM build AS build-native
 
@@ -74,30 +87,36 @@ cd runner
 cargo build --release --features native
 EOF
 
-FROM build-native AS build-ebpf
+FROM build-native AS build-ebpf-base
 
 COPY *.py .
+COPY 4gb/ 4gb/
 COPY tests/shim.c tests/shim.c
 
 RUN <<EOF
 cd modules
 SAFE_TO_PATCH_RUSTLIB=1 scripts/build.sh
-cd ../runner
-cargo build --release
 EOF
 
-FROM build-ebpf AS build-ebpf-unchecked
-
-RUN <<EOF
-cd modules
-SAFE_TO_PATCH_RUSTLIB=1 SHIM_UNCHECKED=1 scripts/build.sh
-EOF
-
-COPY runner runner
+FROM build-ebpf-base AS build-ebpf-default
 
 RUN <<EOF
 cd runner
 cargo build --release
+EOF
+
+FROM build-ebpf-base AS build-ebpf-unchecked
+
+RUN <<EOF
+cd runner
+cargo build --release --features unchecked
+EOF
+
+FROM build-ebpf-base AS build-ebpf-4gb
+
+RUN <<EOF
+cd runner
+cargo build --release --features 4gb
 EOF
 
 FROM golang:1.21-alpine AS build-go-gvisor
@@ -142,8 +161,11 @@ EOF
 
 COPY --link benchmarks benchmarks
 COPY --link --from=build-native /work/runner/target/release/runner runner-native
-COPY --link --from=build-ebpf /work/runner/target/release/runner runner-ebpf
+COPY --link --from=build-wasmtime /work/runner/target/release/runner runner-wasmtime
+COPY --link --from=build-ebpf-default /work/runner/target/release/runner runner-ebpf
 COPY --link --from=build-ebpf-unchecked /work/runner/target/release/runner runner-ebpf-unchecked
+COPY --link --from=build-ebpf-4gb /work/modules/target/libnetstack-4gb.so /usr/lib/
+COPY --link --from=build-ebpf-4gb /work/runner/target/release/runner runner-ebpf-4gb
 COPY --link --from=build-go-gvisor /go/runner/runner runner-go-gvisor
 
 CMD ["bash"]

@@ -31,17 +31,15 @@ RUSTCFLAGS+=("$@")
 scripts/patch-rustlib.sh
 scripts/vendor-smoltcp.sh
 
-if [[ "${SHIM_UNCHECKED-}" = "1" ]]; then
-  clang -O3 -S -emit-llvm -DSHIM_UNCHECKED ../tests/shim.c -o shim.ll
-else
-  clang -O3 -S -emit-llvm ../tests/shim.c -o shim.ll
-fi
+clang -O3 -S -emit-llvm -fPIC ../tests/shim.c -o shim.ll
+clang -O3 -S -emit-llvm -DSHIM_UNCHECKED -fPIC ../tests/shim.c -o shim-unchecked.ll
+clang -O3 -S -emit-llvm -fPIC ../4gb/shim.c -o shim-4gb.ll
 
 for package in "${PACKAGES[@]}"; do
   output="$(cargo rustc -p "$package" --bin "$package" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \
     | jq -e -s -r 'map(select(.reason == "compiler-artifact") | .executable) | last')"
   name="target/${package}"
-  libname="target/lib${package}.a"
+  libname="target/lib$package"
 
   # Some hacks to workaround rustc and LLVM bugs
   sed -E \
@@ -55,8 +53,15 @@ for package in "${PACKAGES[@]}"; do
     -e 's/^define weak hidden noundef /define internal noundef /g' \
     "$output" > "$name-bpf.ll"
   llc -O=3 -march=bpfel -mcpu=v4 -filetype=obj -bpf-stack-size="$BPF_STACK_SIZE" "$name-bpf.ll" -o "$name-bpf.o"
-  ../compile.py "$name-bpf.o" | llvm-link --internalize - shim.ll -o "$name.bc"
-  clang -O3 -c "$name.bc" -o "$name.o"
-  rm -f "$libname"
-  ar -rcD "$libname" "$name.o"
+  ../compile.py "$name-bpf.o" > "$name.ll"
+  llvm-link --internalize "$name.ll" shim.ll -o "$name.bc"
+  llvm-link --internalize "$name.ll" shim-unchecked.ll -o "$name-unchecked.bc"
+  llvm-link --internalize "$name.ll" shim-4gb.ll -o "$name-4gb.bc"
+  clang -O3 -c -fPIC "$name.bc" -o "$name.o"
+  clang -O3 -c -fPIC "$name-unchecked.bc" -o "$name-unchecked.o"
+  rm -f "$libname.a"
+  ar -rcD "$libname.a" "$name.o"
+  rm -f "$libname-unchecked.a"
+  ar -rcD "$libname-unchecked.a" "$name-unchecked.o"
+  clang -O3 -shared -fPIC -nostartfiles "$name-4gb.bc" -T../4gb/script.ld -o "$libname-4gb.so"
 done
