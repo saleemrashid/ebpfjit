@@ -35,6 +35,20 @@ clang -O3 -S -emit-llvm -fPIC ../tests/shim.c -o shim.ll
 clang -O3 -S -emit-llvm -DSHIM_UNCHECKED -fPIC ../tests/shim.c -o shim-unchecked.ll
 clang -O3 -S -emit-llvm -fPIC ../4gb/shim.c -o shim-4gb.ll
 
+ARCHFLAGS_4GB=()
+case "$(clang --print-target-triple)" in
+  aarch64-*)
+    ARCHFLAGS_4GB=(
+      -mcmodel=small
+    )
+    ;;
+  x86_64-*)
+    ARCHFLAGS_4GB=(
+      -mcmodel=large
+    )
+    ;;
+esac
+
 for package in "${PACKAGES[@]}"; do
   output="$(cargo rustc -p "$package" --bin "$package" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \
     | jq -e -s -r 'map(select(.reason == "compiler-artifact") | .executable) | last')"
@@ -63,5 +77,5 @@ for package in "${PACKAGES[@]}"; do
   ar -rcD "$libname.a" "$name.o"
   rm -f "$libname-unchecked.a"
   ar -rcD "$libname-unchecked.a" "$name-unchecked.o"
-  clang -O3 -shared -fPIC -nostartfiles "$name-4gb.bc" -T../4gb/script.ld -o "$libname-4gb.so"
+  clang -O3 -shared -fPIC -nostartfiles "${ARCHFLAGS_4GB[@]}" "$name-4gb.bc" -T../4gb/script.ld -o "$libname-4gb.so"
 done
