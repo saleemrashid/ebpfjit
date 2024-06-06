@@ -79,7 +79,7 @@ class Compiler(object):
         name = f"section .{section.name.lower()}"
         variable = ir.GlobalVariable(self.module, ir.LiteralStructType(typs), name)
         variable.linkage = "private"
-        variable.section = f".data.shim_{section.name.lower()}"
+        # variable.section = f".data.shim_{section.name.lower()}"
         self.sections[section] = variable
 
     def define_section(
@@ -217,12 +217,17 @@ class Compiler(object):
         self.builder.ret(self.load_reg(bpf.Reg.R0))
 
     def _alloc_stack(self, size: int) -> tuple[ir.Value, ir.Value]:
-        stack_begin = self.builder.call(self.stack_alloc_func, (I64(size),))
-        stack_end = self.builder.gep(stack_begin, (I64(size),))
+        if size % 8 != 0:
+            raise ValueError("size must be a multiple of 8")
+        count = size // 8
+
+        stack_begin = self.builder.alloca(I64, count)
+        stack_end = self.builder.gep(stack_begin, (I64(count),))
         return (stack_begin, stack_end)
 
     def _dealloc_stack(self, size: int):
-        self.builder.call(self.stack_dealloc_func, (I64(size),))
+        # self.builder.call(self.stack_dealloc_func, (I64(size),))
+        pass
 
     @staticmethod
     def _alloc_reg(builder: ir.IRBuilder) -> dict[bpf.Reg, ir.Value]:
