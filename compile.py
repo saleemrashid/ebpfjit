@@ -30,6 +30,7 @@ class Compiler(object):
     def __init__(self) -> None:
         self.module = ir.Module()
         self.symbols: dict[SymbolId, ir.Value] = {}
+        self.func_ids: dict[SymbolId, int] = {}
         self.blocks: dict[int, ir.Block] = {}
         self.unvisited_blocks: set[int] = set()
         self.sections: dict[SectionId, ir.Value] = {}
@@ -91,7 +92,12 @@ class Compiler(object):
                 case bytes() | bytearray():
                     elems.append(ir.Constant(ir.ArrayType(I8, len(item)), item))
                 case (symbol_id, offset):
-                    elems.append(self.symbols[symbol_id].ptrtoint(I64).add(I64(offset)))
+                    if func_id := self.func_ids.get(symbol_id):
+                        elems.append(I64(func_id))
+                    else:
+                        elems.append(
+                            self.symbols[symbol_id].ptrtoint(I64).add(I64(offset))
+                        )
 
         value = ir.Constant.literal_struct(elems)
         variable = self.sections[section]
@@ -128,7 +134,23 @@ class Compiler(object):
         func = ir.Function(self.module, type, name)
         func.linkage = linkage
         self.symbols[symbol] = func
+
+        assert symbol not in self.func_ids
+        self.func_ids[symbol] = len(self.func_ids)
+
         return func
+
+    def end_declarations(self):
+        elems = [None] * len(self.func_ids)
+        for symbol, func_id in self.func_ids.items():
+            elems[func_id] = self.symbols[symbol].bitcast(BPF_FUNC_TYPE.as_pointer())
+        value = ir.Constant.literal_array(elems)
+
+        variable = ir.GlobalVariable(self.module, value.type, "_func_id_table")
+        variable.linkage = "internal"
+        variable.global_constant = True
+        variable.initializer = value
+        self.func_id_table = variable
 
     def compile_function(
         self, symbol_id: SymbolId, symbol: Symbol, text: list[bpf.Instruction[SymbolId]]
@@ -383,9 +405,10 @@ class Compiler(object):
                 match opcode.code:
                     case bpf.JumpCode.CALL:
                         if opcode.source == bpf.Source.X:
-                            # FIXME(saleem): check the function target of course
-                            func = self.builder.inttoptr(
-                                self.load_reg(bpf.Reg(imm)), BPF_FUNC_TYPE.as_pointer()
+                            # FIXME(saleem): bounds check func ID table
+                            index = self.load_reg(bpf.Reg(imm))
+                            func = self.builder.load(
+                                self.builder.gep(self.func_id_table, [I64(0), index])
                             )
                         else:
                             assert symbol is not None
@@ -456,11 +479,14 @@ class Compiler(object):
                         if symbol is None:
                             result = I64(ins.imm64)
                         else:
-                            # TODO(saleem): this should probably check that imm64 == 0 for non-pointers
-                            result = self.builder.add(
-                                self.builder.ptrtoint(self.symbols[symbol], I64),
-                                I64(ins.imm64),
-                            )
+                            if func_id := self.func_ids.get(symbol):
+                                assert ins.imm64 == 0
+                                result = I64(func_id)
+                            else:
+                                result = self.builder.add(
+                                    self.builder.ptrtoint(self.symbols[symbol], I64),
+                                    I64(ins.imm64),
+                                )
                     case _:
                         raise NotImplementedError(f"{src!r}")
 
@@ -519,8 +545,12 @@ if __name__ == "__main__":
 
     compiler = Compiler()
 
-    compiler.stack_alloc_func = compiler.extern_function("shim_stack_alloc", ir.FunctionType(I8.as_pointer(), (I64,)))
-    compiler.stack_dealloc_func = compiler.extern_function("shim_stack_dealloc", ir.FunctionType(ir.VoidType(), (I64,)))
+    compiler.stack_alloc_func = compiler.extern_function(
+        "shim_stack_alloc", ir.FunctionType(I8.as_pointer(), (I64,))
+    )
+    compiler.stack_dealloc_func = compiler.extern_function(
+        "shim_stack_dealloc", ir.FunctionType(ir.VoidType(), (I64,))
+    )
     compiler.extern_function("shim_heap_start", ir.FunctionType(I64, ()))
     compiler.extern_function("shim_heap_size", ir.FunctionType(I64, ()))
 
@@ -529,16 +559,17 @@ if __name__ == "__main__":
             f"shim_load{ty.width}", ir.FunctionType(ty, (ty.as_pointer(),))
         )
         compiler.store_funcs[ty] = compiler.extern_function(
-            f"shim_store{ty.width}", ir.FunctionType(ir.VoidType(), (ty.as_pointer(), ty))
+            f"shim_store{ty.width}",
+            ir.FunctionType(ir.VoidType(), (ty.as_pointer(), ty)),
         )
 
     # TODO(saleem): implement helper functions
-    compiler.func_allow_region = compiler.extern_function(
-        "allow_region", ir.FunctionType(ir.VoidType(), (I64, I64))
-    )
-    compiler.func_unallow_region = compiler.extern_function(
-        "unallow_region", ir.FunctionType(ir.VoidType(), (I64, I64))
-    )
+    # compiler.func_allow_region = compiler.extern_function(
+    #    "allow_region", ir.FunctionType(ir.VoidType(), (I64, I64))
+    # )
+    # compiler.func_unallow_region = compiler.extern_function(
+    #    "unallow_region", ir.FunctionType(ir.VoidType(), (I64, I64))
+    # )
 
     compiler.extern_function("tap_tx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
     compiler.extern_function("tap_rx", ir.FunctionType(I64, (I64,) * BPF_ARGS))
@@ -546,9 +577,9 @@ if __name__ == "__main__":
     compiler.extern_function("micros", ir.FunctionType(I64, (I64,) * BPF_ARGS))
 
     compiler.extern_function("printf", ir.FunctionType(I64, (I64,), True))
-    compiler.extern_function("my_malloc", ir.FunctionType(I64, (I64,)))
-    compiler.extern_function("my_free", ir.FunctionType(I64, (I64,)))
-    compiler.extern_function("__ctzsi2", ir.FunctionType(I64, (I64,)))
+    # compiler.extern_function("my_malloc", ir.FunctionType(I64, (I64,)))
+    # compiler.extern_function("my_free", ir.FunctionType(I64, (I64,)))
+    # compiler.extern_function("__ctzsi2", ir.FunctionType(I64, (I64,)))
     compiler.extern_function("__ctzti2", ir.FunctionType(I64, (I64,)))
     compiler.extern_function(
         "write",
@@ -574,6 +605,8 @@ if __name__ == "__main__":
             compiler.declare_function(symbol_id)
         else:
             compiler.declare_data(symbol_id, symbol)
+    compiler.end_declarations()
+
     for symbol_id, symbol in linker.symbols.items():
         if symbol.section == SectionId.Text:
             compiler.compile_function(symbol_id, symbol, linker.program)
