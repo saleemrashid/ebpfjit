@@ -30,7 +30,7 @@ RESPONSES: Mapping[Mode, re.Pattern[bytes]] = {
 
 
 def apache_bench(runner: Runner, dir: Path, requests: int, concurrency: int) -> None:
-    for i in range(5):
+    for i in range(10):
         stem = f"ab-{requests}-{concurrency}-{i + 1:02}"
         check_call(
             [
@@ -56,14 +56,14 @@ def run(mode: Mode, dir: Path, wrapper: Iterable[str] = ()) -> None:
             raise Exception(f"unexpected response: {response!r}")
 
         for requests, concurrency in (
-            (2500, 500),
+            # (2500, 500),
             (2500, 1000),
-            (5000, 500),
-            (5000, 1000),
-            (5000, 5000),
-            (10000, 500),
-            (10000, 1000),
-            (10000, 5000),
+            # (5000, 500),
+            # (5000, 1000),
+            # (5000, 5000),
+            # (10000, 500),
+            # (10000, 1000),
+            # (10000, 5000),
         ):
             apache_bench(runner, dir, requests, concurrency)
 

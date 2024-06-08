@@ -54,7 +54,7 @@ test-%: %-native.txt %-jit.txt
 	$(BPFJIT) $< | $(LINK) --internalize -S - shim.ll -o $@
 
 shim.ll: shim.c
-	$(CLANG) $(CFLAGS) -emit-llvm -S $< -o $@
+	$(CLANG) $(CFLAGS) -DSHIM_UNCHECKED -emit-llvm -S $< -o $@
 
 %-bpf.ll: %.c
 	$(CLANG) $(CFLAGS) $(BPF_CFLAGS) -S -emit-llvm -c $< -o $@

@@ -89,6 +89,8 @@ EOF
 
 FROM build-native AS build-ebpf-base
 
+ARG CPUTYPE
+
 COPY *.py .
 COPY 4gb/ 4gb/
 COPY tests/shim.c tests/shim.c
@@ -145,6 +147,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   apache2-utils \
   curl \
   iproute2 \
+  jq \
   linux-perf \
   magic-wormhole
 pip3 install pipenv
@@ -159,6 +162,7 @@ cd benchmarks
 python3 -m pipenv install --system --deploy
 EOF
 
+COPY --link scripts/fly-run.sh fly-run.sh
 COPY --link benchmarks benchmarks
 COPY --link --from=build-native /work/runner/target/release/runner runner-native
 COPY --link --from=build-wasmtime /work/runner/target/release/runner runner-wasmtime

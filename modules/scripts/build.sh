@@ -31,10 +31,6 @@ RUSTCFLAGS+=("$@")
 scripts/patch-rustlib.sh
 scripts/vendor-smoltcp.sh
 
-clang -O3 -S -emit-llvm -fPIC ../tests/shim.c -o shim.ll
-clang -O3 -S -emit-llvm -DSHIM_UNCHECKED -fPIC ../tests/shim.c -o shim-unchecked.ll
-clang -O3 -S -emit-llvm -fPIC ../4gb/shim.c -o shim-4gb.ll
-
 ARCHFLAGS_4GB=()
 case "$(clang --print-target-triple)" in
   aarch64-*)
@@ -48,6 +44,16 @@ case "$(clang --print-target-triple)" in
     )
     ;;
 esac
+
+OPTFLAGS=(-O3)
+
+if [[ -n "${CPUTYPE-}" ]]; then
+  OPTFLAGS+=("-march=$CPUTYPE" "-mtune=$CPUTYPE")
+fi
+
+clang "${OPTFLAGS[@]}" -S -emit-llvm -fPIC ../tests/shim.c -o shim.ll
+clang "${OPTFLAGS[@]}" -S -emit-llvm -DSHIM_UNCHECKED -fPIC ../tests/shim.c -o shim-unchecked.ll
+clang "${OPTFLAGS[@]}" -S -emit-llvm -fPIC ../4gb/shim.c -o shim-4gb.ll
 
 for package in "${PACKAGES[@]}"; do
   output="$(cargo rustc -p "$package" --bin "$package" "${CARGOFLAGS[@]}" -- "${RUSTCFLAGS[@]}" \
@@ -71,11 +77,11 @@ for package in "${PACKAGES[@]}"; do
   llvm-link --internalize "$name.ll" shim.ll -o "$name.bc"
   llvm-link --internalize "$name.ll" shim-unchecked.ll -o "$name-unchecked.bc"
   llvm-link --internalize "$name.ll" shim-4gb.ll -o "$name-4gb.bc"
-  clang -O3 -c -fPIC "$name.bc" -o "$name.o"
-  clang -O3 -c -fPIC "$name-unchecked.bc" -o "$name-unchecked.o"
+  clang "${OPTFLAGS[@]}" -c -fPIC "$name.bc" -o "$name.o"
+  clang "${OPTFLAGS[@]}" -c -fPIC "$name-unchecked.bc" -o "$name-unchecked.o"
   rm -f "$libname.a"
   ar -rcD "$libname.a" "$name.o"
   rm -f "$libname-unchecked.a"
   ar -rcD "$libname-unchecked.a" "$name-unchecked.o"
-  clang -O3 -shared -fPIC -nostartfiles "${ARCHFLAGS_4GB[@]}" "$name-4gb.bc" -T../4gb/script.ld -o "$libname-4gb.so"
+  clang "${OPTFLAGS[@]}" -shared -fPIC -nostartfiles "${ARCHFLAGS_4GB[@]}" "$name-4gb.bc" -T../4gb/script.ld -o "$libname-4gb.so"
 done
