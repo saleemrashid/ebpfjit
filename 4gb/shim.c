@@ -21,27 +21,21 @@ extern uint8_t shim_stack_end[];
 extern uint8_t shim_heap_start_[];
 extern uint8_t shim_heap_end[];
 
-static size_t stack_offset = 0;
+static uintptr_t stack_end = (uintptr_t) shim_stack_end;
 
 void *shim_stack_alloc(size_t size) {
-    stack_offset += size;
-    return shim_stack_end - stack_offset;
+  stack_end -= size;
+  return (void *)stack_end;
 }
 
-void shim_stack_dealloc(size_t size) {
-    stack_offset -= size;
-}
+void shim_stack_dealloc(size_t size) { stack_end += size; }
 
 /* 1GB should be enough :) */
 #define HEAP_SIZE (1024 * 1024 * 1024)
 
-void *shim_heap_start(void) {
-    return shim_heap_start_;
-}
+void *shim_heap_start(void) { return shim_heap_start_; }
 
-size_t shim_heap_size(void) {
-    return shim_heap_end - shim_heap_start_;
-}
+size_t shim_heap_size(void) { return shim_heap_end - shim_heap_start_; }
 
 /* Load/store functions */
 
@@ -59,20 +53,18 @@ static inline const char *modestr(enum mode mode) {
 #define ADDR_MASK 0x7fffffff
 
 static inline uintptr_t addr(uintptr_t p) {
-    return ((uintptr_t) shim_segment_addr) | (p & ADDR_MASK);
+  static const uintptr_t base_addr = (uintptr_t)shim_segment_addr;
+  __builtin_assume((base_addr & ADDR_MASK) == 0);
+  return base_addr | (p & ADDR_MASK);
 }
 
-#define ADDR(X) ((typeof(X)) addr((uintptr_t) (X)))
+#define ADDR(X) ((typeof(X))addr((uintptr_t)(X)))
 
-#define _DEFINE_LOAD(T, F)        \
-  T F(const T *src) {             \
-    return *ADDR(src);                  \
-  }
+#define _DEFINE_LOAD(T, F) \
+  T F(const T *src) { return *ADDR(src); }
 
-#define _DEFINE_STORE(T, F)        \
-  void F(T *dst, T src) {          \
-    *ADDR(dst) = src;                    \
-  }
+#define _DEFINE_STORE(T, F) \
+  void F(T *dst, T src) { *ADDR(dst) = src; }
 
 #define _MEM_ACCESS0(T, L, S) _DEFINE_LOAD(T, L) _DEFINE_STORE(T, S)
 #define MEM_ACCESS(N) _MEM_ACCESS0(uint##N##_t, shim_load##N, shim_store##N)

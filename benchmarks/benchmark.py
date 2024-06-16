@@ -30,7 +30,7 @@ RESPONSES: Mapping[Mode, re.Pattern[bytes]] = {
 
 
 def apache_bench(runner: Runner, dir: Path, requests: int, concurrency: int) -> None:
-    for i in range(10):
+    for i in range(25):
         stem = f"ab-{requests}-{concurrency}-{i + 1:02}"
         check_call(
             [
